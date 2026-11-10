@@ -1,0 +1,19 @@
+# WhatsApp Audio Transcriber - Custom Vocabulary Dictionary
+# Add domain-specific terms, uncommon proper nouns, or acronyms below.
+# Lines starting with # are comments. You can write one term per line or comma-separated.
+
+Acquisition
+Due Diligence
+Compliance
+Audit
+Escrow
+Contractual Agreement
+Operating Agreement
+Memorandum of Understanding
+Power of Attorney
+Non-Disclosure Agreement
+Quarterly Report
+Tax Liability
+Corporate Governance
+Board of Directors
+Financial Statement

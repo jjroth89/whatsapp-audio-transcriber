@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whatsapp-audio-transcriber"
+version = "1.0.0"
+description = "Automated high-fidelity audio transcription for WhatsApp chat exports with timeline-anchored inline embedding."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "jjroth89" }
+]
+keywords = ["whatsapp", "whisper", "faster-whisper", "audio-transcription", "stt", "hermes-agent", "forensic-analysis"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+  "faster-whisper>=1.1.1,<2.0",
+  "av>=12.0.0,<14.0.0",
+  "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+cuda = [
+  "nvidia-cublas-cu12",
+  "nvidia-cudnn-cu12",
+  "nvidia-cuda-nvrtc-cu12",
+]
+
+[project.scripts]
+whatsapp-transcribe = "whatsapp_transcriber.cli:main"
