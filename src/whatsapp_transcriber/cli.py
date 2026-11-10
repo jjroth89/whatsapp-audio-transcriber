@@ -11,6 +11,7 @@ from .parser import parse_chat_log
 from .matcher import match_audios_in_chat
 from .vocab import harvest_vocabulary_from_chat
 from .formatter import generate_enriched_outputs
+from .hardware import detect_hardware, resolve_model_cache_dir
 from .backends.base import BaseTranscriber
 from .backends.local_whisper import LocalWhisperTranscriber
 from .backends.hermes_profile import HermesProfileTranscriber
@@ -24,14 +25,14 @@ def detect_chat_file(directory: Path) -> Path:
 
     # Priority 2: *.txt files
     txt_candidates = list(directory.glob("*.txt"))
-    # Exclude system files
+    # Exclude system and doc files
     txt_candidates = [f for f in txt_candidates if f.name.lower() not in ["requirements.txt", "vocab.txt", "license.txt"]]
     if txt_candidates:
         return txt_candidates[0]
 
     # Priority 3: *.md files
     md_candidates = list(directory.glob("*.md"))
-    md_candidates = [f for f in md_candidates if f.name.lower() not in ["readme.md", "skill.md"]]
+    md_candidates = [f for f in md_candidates if f.name.lower() not in ["readme.md", "skill.md", "agents.md"]]
     if md_candidates:
         return md_candidates[0]
 
@@ -55,12 +56,15 @@ def create_transcriber(args) -> BaseTranscriber:
             model_name=args.model if args.model != "large-v3" else None
         )
     elif engine_choice == "local":
-        print(f"[ENGINE] Initializing Local faster-whisper on {args.device} ({args.model}, {args.compute_type})...")
+        hw_profile = detect_hardware(args.device, args.compute_type)
+        print(f"[HARDWARE] {hw_profile.details}")
+
         return LocalWhisperTranscriber(
             model_name=args.model,
             device=args.device,
             compute_type=args.compute_type,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            cache_dir=args.model_dir
         )
     else:
         raise ValueError(f"Unknown engine: {args.engine}. Expected 'auto', 'local', or 'hermes'.")
@@ -72,12 +76,13 @@ def main():
     )
     parser.add_argument("input_path", type=Path, help="Path to exported WhatsApp .zip file or extracted directory.")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output destination folder.")
-    parser.add_argument("-e", "--engine", choices=["auto", "local", "hermes"], default="auto", help="STT engine to use.")
+    parser.add_argument("-e", "--engine", choices=["auto", "local", "hermes"], default="auto", help="STT engine to use (default: auto).")
     parser.add_argument("-m", "--model", default="large-v3", help="Whisper model name (default: large-v3).")
-    parser.add_argument("-d", "--device", choices=["cuda", "cpu"], default="cuda", help="Inference device for local engine.")
-    parser.add_argument("-c", "--compute-type", default="float16", help="Precision for local CTranslate2 (e.g. float16, int8_float16).")
+    parser.add_argument("-d", "--device", choices=["auto", "cuda", "cpu"], default="auto", help="Device choice (auto detects CUDA GPU or falls back to CPU).")
+    parser.add_argument("-c", "--compute-type", default="auto", help="Precision: auto, float16, int8_float16, int8, float32.")
     parser.add_argument("-b", "--batch-size", type=int, default=8, help="Inference batch size.")
     parser.add_argument("-l", "--language", default="pt", help="Spoken language code (e.g. pt, en, es).")
+    parser.add_argument("--model-dir", type=Path, default=None, help="Custom folder for caching/loading Whisper model weights.")
     parser.add_argument("--dict", type=Path, default=None, help="Path to custom vocabulary dictionary file (vocab.txt).")
     parser.add_argument("--stt-url", default=None, help="Custom endpoint URL for Hermes or OpenAI-compatible STT.")
     parser.add_argument("--api-key", default=None, help="API key for Hermes or OpenAI STT service.")
@@ -143,7 +148,7 @@ def main():
             preview_vocab = prompt_vocab[:80] + ("..." if len(prompt_vocab) > 80 else "")
             print(f"[VOCAB] Primed prompt with vocabulary: \"{preview_vocab}\"")
 
-        # Step 6: Initialize transcriber
+        # Step 6: Initialize transcriber (adaptively selects GPU or CPU)
         transcriber = create_transcriber(args)
 
         # Step 7: Transcribe audios

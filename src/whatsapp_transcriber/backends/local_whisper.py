@@ -3,34 +3,16 @@ import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
 from .base import BaseTranscriber
-
-def _configure_windows_cuda_dlls():
-    """Ensure CUDA and cuDNN DLLs installed via pip packages are discoverable."""
-    if sys.platform != "win32":
-        return
-    site_packages = Path(sys.executable).parent.parent / "Lib" / "site-packages" / "nvidia"
-    if site_packages.exists():
-        for subfolder in ["cublas", "cudnn", "cuda_nvrtc"]:
-            bin_path = site_packages / subfolder / "bin"
-            if bin_path.exists():
-                str_bin = str(bin_path)
-                os.environ["PATH"] = str_bin + os.pathsep + os.environ.get("PATH", "")
-                if hasattr(os, "add_dll_directory"):
-                    try:
-                        os.add_dll_directory(str_bin)
-                    except Exception:
-                        pass
-
-_configure_windows_cuda_dlls()
+from ..hardware import detect_hardware, resolve_model_cache_dir, HardwareProfile
 
 class LocalWhisperTranscriber(BaseTranscriber):
-    """Local faster-whisper inference running on NVIDIA CUDA or CPU."""
+    """Adaptive faster-whisper inference running on NVIDIA CUDA or fallback CPU."""
 
     def __init__(
         self,
         model_name: str = "large-v3",
-        device: str = "cuda",
-        compute_type: str = "float16",
+        device: str = "auto",
+        compute_type: str = "auto",
         batch_size: int = 8,
         beam_size: int = 5,
         cache_dir: Optional[Path] = None
@@ -44,26 +26,23 @@ class LocalWhisperTranscriber(BaseTranscriber):
                 "Install them with: pip install faster-whisper"
             ) from e
 
-        if device == "cuda":
-            cuda_count = ctranslate2.get_cuda_device_count()
-            if cuda_count < 1:
-                raise RuntimeError(
-                    "CUDA device requested but no CUDA-capable GPU detected by CTranslate2. "
-                    "Ensure NVIDIA drivers and CUDA libraries are installed."
-                )
-
+        # Resolve hardware automatically
+        self.profile: HardwareProfile = detect_hardware(device, compute_type)
         self.model_name = model_name
-        self.device = device
-        self.compute_type = compute_type
-        self.batch_size = batch_size
+        self.device = self.profile.device
+        self.compute_type = self.profile.compute_type
+        self.batch_size = batch_size if self.profile.is_gpu else max(1, min(4, batch_size))
         self.beam_size = beam_size
 
-        download_root = str(cache_dir) if cache_dir else None
+        resolved_cache = resolve_model_cache_dir(cache_dir)
+        download_root = str(resolved_cache) if resolved_cache else None
+
+        cpu_threads = max(1, min(12, (os.cpu_count() or 8) // 2))
         self._raw_model = WhisperModel(
             model_name,
-            device=device,
-            compute_type=compute_type,
-            cpu_threads=max(1, min(12, (os.cpu_count() or 8) // 2)),
+            device=self.device,
+            compute_type=self.compute_type,
+            cpu_threads=cpu_threads,
             num_workers=2,
             download_root=download_root
         )

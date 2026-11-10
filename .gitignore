@@ -31,9 +31,19 @@ venv.bak/
 
 # Whisper & Model Caches
 models_cache/
+.models_cache/
+models/
 .cache/
 *.bin
 *.pt
+*.onnx
+*.tmp
+
+# Environment & local credentials
+.env
+.env.*
+*.local
+local_config.json
 
 # Data & Output folders
 output/
