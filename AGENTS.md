@@ -12,16 +12,17 @@ ChatGPT Desktop cannot run local NVIDIA CUDA neural inference directly inside it
 Run the tool on your machine (using your local GPU or Hermes Agent):
 
 ```bash
-whatsapp-transcribe /path/to/exported_chat.zip
+whatsapp-transcribe /path/to/exported_chat.zip --rezip
 ```
 
 This creates an output folder containing:
 * `enriched_chat.md` (Full conversation with audio transcripts inlined chronologically)
 * `enriched_chat.json` (Structured message array)
-* `<chat>_transcribed.zip` (All output deliverables packaged)
+* `audio_audit.json` (Detailed media and attachment audit)
+* `<chat>_agent_pack.zip` (All output deliverables packaged when using `--rezip`)
 
 ### Step 2: Upload to ChatGPT Desktop
-Attach `enriched_chat.md` (or the packaged `.zip`) to a ChatGPT Desktop conversation.
+Attach `enriched_chat.md` (or the packaged `<chat>_agent_pack.zip`) to a ChatGPT Desktop conversation.
 
 ### Step 3: Analysis Prompts for ChatGPT Desktop
 Use any of the following prompt templates depending on your goal:
@@ -46,9 +47,11 @@ If this repository is installed as a skill in Hermes Agent:
 
 ### Agent Decision Matrix
 * When a user provides a WhatsApp `.zip` export or a folder with `_chat.txt` and `.opus` voice notes:
-  1. Invoke the CLI:
+  1. Invoke the CLI with the desired extraction mode and packaging:
      ```bash
-     python -m whatsapp_transcriber.cli <path_to_zip> --output <output_dir>
+     whatsapp-transcribe <path_to_zip> -o <output_dir> --rezip
+     # Or for multimodal vision/doc analysis:
+     whatsapp-transcribe <path_to_zip> -o <output_dir> --no-videos --rezip
      ```
   2. If running inside a container with `HERMES_STT_ENDPOINT` set, the tool will automatically use the profile's STT model.
   3. If running on bare-metal with an NVIDIA GPU, it automatically utilizes CUDA FP16.

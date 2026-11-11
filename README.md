@@ -48,10 +48,11 @@ Exported WhatsApp ZIP
         │                       │
         ▼                       ▼
 Enriched Output:
-  ├── enriched_chat.md   (Timeline with inlined audio notes)
-  ├── enriched_chat.json (Structured message objects)
-  ├── audio_audit.json   (Hashes, durations, confidence)
-  └── [chat]_transcribed.zip
+  ├── enriched_chat.md       (Timeline with inlined audio notes)
+  ├── enriched_chat.json     (Structured message objects)
+  ├── audio_audit.json       (Hashes, durations, confidence, media catalog)
+  ├── media/                 (Extracted attachments depending on mode)
+  └── [chat]_agent_pack.zip  (Standalone bundle when using --rezip)
 ```
 
 ---
@@ -64,54 +65,74 @@ Enriched Output:
 git clone https://github.com/jjroth89/whatsapp-audio-transcriber.git
 cd whatsapp-audio-transcriber
 
-# Create environment (e.g., Python 3.11 or 3.12)
+# Create environment (e.g., Python 3.10, 3.11, or 3.12)
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies and CLI
+pip install -e .
 
 # For NVIDIA GPU acceleration (CUDA 12):
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12
 ```
 
-### 2. Basic Usage
+### 2. Usage Examples
 
-Transcribe an exported WhatsApp chat ZIP:
-
+**Standard Mode (audio & chat only, agent pack):**
 ```bash
-python -m whatsapp_transcriber.cli /path/to/WhatsApp_Chat.zip
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --rezip
 ```
 
-Output files will be generated in `WhatsApp_Chat_transcribed/`.
+**Full Multimodal Extraction (documents, images, audios, and videos):**
+```bash
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --extract-all --rezip
+```
+
+**Exclude Heavy Videos (documents, images, stickers, and audios):**
+```bash
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --no-videos --rezip
+```
+
+**Lean Mode (artifacts only, deletes audio files post-transcription):**
+```bash
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --lean --rezip
+```
 
 ---
 
 ## ⚙️ Command-Line Options
 
 ```text
-usage: whatsapp-transcribe [-h] [-o OUTPUT] [-e {auto,local,hermes}] [-m MODEL]
-                           [-d {cuda,cpu}] [-c COMPUTE_TYPE] [-b BATCH_SIZE]
-                           [-l LANGUAGE] [--dict DICT] [--stt-url STT_URL]
-                           [--api-key API_KEY] [--zip-output] [--quiet]
+usage: whatsapp-transcribe [-h] [-o OUTPUT] [-e {auto,local,hermes}]
+                           [-m MODEL] [-d {auto,cuda,cpu}] [-c COMPUTE_TYPE]
+                           [-b BATCH_SIZE] [-l LANGUAGE]
+                           [--model-dir MODEL_DIR] [--dict DICT]
+                           [--stt-url STT_URL] [--api-key API_KEY]
+                           [--extract-all] [--no-videos] [--lean] [--rezip]
+                           [--quiet]
                            input_path
 
 Positional Arguments:
   input_path             Path to exported WhatsApp .zip file or folder.
 
 Options:
-  -o, --output DIR       Destination folder (default: <input_name>_transcribed)
-  -e, --engine CHOICE    STT engine: auto, local, or hermes (default: auto)
-  -m, --model MODEL      Whisper model name (default: large-v3)
-  -d, --device DEVICE    cuda or cpu (default: cuda)
-  -c, --compute-type PRE float16, int8_float16, float32 (default: float16)
-  -b, --batch-size NUM   Inference batch size (default: 8)
-  -l, --language CODE    Spoken language code (default: pt)
-  --dict FILE            Custom dictionary file for uncommon terms (vocab.txt)
-  --stt-url URL          Endpoint URL for Hermes Profile or OpenAI STT
-  --api-key KEY          API key for Hermes or OpenAI STT service
-  --zip-output           Create ready-to-share ZIP bundle (default: True)
-  --quiet                Suppress console progress logs
+  -h, --help             Show this help message and exit.
+  -o, --output DIR       Destination folder (default: <input_name>_transcribed).
+  -e, --engine CHOICE    STT engine: auto, local, or hermes (default: auto).
+  -m, --model MODEL      Whisper model name (default: large-v3).
+  -d, --device DEVICE    Device: auto, cuda, or cpu (default: auto).
+  -c, --compute-type PRE Precision: auto, float16, int8_float16, int8, float32.
+  -b, --batch-size NUM   Inference batch size.
+  -l, --language CODE    Spoken language code (e.g. pt, en, es).
+  --model-dir DIR        Custom folder for loading/caching Whisper model weights.
+  --dict FILE            Custom dictionary file for specialized terms (vocab.txt).
+  --stt-url URL          Endpoint URL for Hermes Profile or OpenAI STT.
+  --api-key KEY          API key for Hermes or OpenAI STT service.
+  --extract-all          Unpack and preserve all media (photos, videos, documents, audio).
+  --no-videos            Unpack all media and documents except large video files.
+  --lean                 Purge raw audio files after transcription, leaving only artifacts.
+  --rezip                Rezip the final output folder into a compact agent bundle.
+  --quiet                Suppress console progress logs.
 ```
 
 ---
