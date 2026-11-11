@@ -14,7 +14,9 @@ Designed for AI agent workflows (**Hermes Agent**, **ChatGPT Desktop**, **Claude
 
 ## 🌟 Key Features
 
-* **📦 Direct ZIP Ingestion:** Seamlessly unzips and parses WhatsApp exports containing `_chat.txt` (iOS), `Conversa do WhatsApp.txt` (Android), or Markdown chat logs alongside media files.
+* **📦 Flexible Extraction Modes:** Selectively unpacks only audio and chat logs by default, or supports full multimodal unpacking (`--extract-all`), video-omitted unpacking (`--no-videos`), and disk-saving lean mode (`--lean`).
+* **🗜️ Instant Agent Packaging (`--rezip`):** Recompresses the output directory into a standalone ZIP pack ready for immediate upload to cloud agents or ChatGPT Desktop.
+* **🏷️ Semantic Media & Document Tagging:** Automatically detects and tags PDFs, documents, images, and videos with relative links and generates a structured `media_catalog` in the audit JSON.
 * **🎯 Line-Anchored Conversational Placement:** Transcripts are inlined directly at the exact line where the voice note was sent or received.
 * **🛡️ Shared & Forwarded Audio Provenance Detection:** Detects whether an audio note was recorded live in the chat (`PTT-`) or forwarded from another conversation (`AUD-` or date discrepancy). Never misplaces forwarded audios in the timeline!
 * **⚡ High-Performance GPU Inference:** Optimized for **NVIDIA GeForce RTX 3090** (and CUDA 12) using `faster-whisper` (`large-v3` in FP16), with Silero VAD filtering and word-level timestamps.

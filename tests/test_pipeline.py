@@ -141,7 +141,7 @@ PTT-20230510-WA0003.opus (file attached)
 
             # Verify Markdown contains inlined audio
             md_text = paths["markdown"].read_text(encoding="utf-8")
-            self.assertIn("[AUDIO NOTE | Duration: 24.5s | File: `PTT-20240115-WA0001.opus`]", md_text)
+            self.assertIn("[AUDIO NOTE | Duration: 24.5s | File: [`PTT-20240115-WA0001.opus`](media/PTT-20240115-WA0001.opus)]", md_text)
             self.assertIn("Hello Bob, proposal accepted as discussed.", md_text)
 
             # Verify JSON contains structured message objects

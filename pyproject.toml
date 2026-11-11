@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whatsapp-audio-transcriber"
-version = "1.0.0"
+version = "1.1.0"
 description = "Automated high-fidelity audio transcription for WhatsApp chat exports with timeline-anchored inline embedding."
 readme = "README.md"
 requires-python = ">=3.10"

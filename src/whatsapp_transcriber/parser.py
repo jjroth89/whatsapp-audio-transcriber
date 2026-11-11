@@ -1,6 +1,7 @@
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 @dataclass
@@ -13,27 +14,29 @@ class ChatMessage:
     content: str
     is_system: bool = False
     attachment_filename: Optional[str] = None
+    attachment_type: Optional[str] = None  # "audio", "image", "video", "document", "sticker", "attachment"
     is_forwarded: bool = False
     parsed_datetime: Optional[datetime] = None
 
-# Regex patterns for Android and iOS formats
-# Android: "12/06/2024 12:57 - Sender: Content" or "12/06/2024, 12:57 - Sender: Content"
+# Regex patterns for Android, iOS, and Markdown formats
 ANDROID_PATTERN = re.compile(
     r"^(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)\s*-\s*(.*?)$"
 )
 
-# iOS: "[12/06/2024, 12:57:15] Sender: Content"
 IOS_PATTERN = re.compile(
     r"^\[(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)\]\s*(.*?)$"
 )
 
-# Markdown style: "**[12/06/2024 12:57] Sender:** Content"
 MD_PATTERN = re.compile(
     r"^\*{0,2}\[(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+?)\*{0,2}:\s*(.*?)$"
 )
 
-# Common attachment indicators in PT, EN, ES
-AUDIO_EXT_REGEX = re.compile(r"[\w\-]+\.(?:opus|ogg|m4a|mp3|wav|aac|flac)", re.IGNORECASE)
+# Matches any media or document attachment reference in WhatsApp logs
+ATTACHMENT_REGEX = re.compile(
+    r"[\w\.\-]+\.(?:opus|ogg|m4a|mp3|wav|aac|flac|jpg|jpeg|png|webp|gif|mp4|3gp|mov|avi|mkv|pdf|docx?|xlsx?|csv|vcf|zip)",
+    re.IGNORECASE
+)
+
 FORWARDED_INDICATORS = [
     "<mensagem encaminhada>",
     "mensagem encaminhada",
@@ -44,6 +47,30 @@ FORWARDED_INDICATORS = [
     "[mensagem encaminhada]",
     "[forwarded]"
 ]
+
+def classify_attachment(filename: str) -> str:
+    """Classifies attachment filename into a semantic category."""
+    ext = Path(filename).suffix.lower()
+    fname_upper = filename.upper()
+    if ext in [".opus", ".ogg", ".m4a", ".mp3", ".wav", ".aac", ".flac"]:
+        return "audio"
+    if ext in [".jpg", ".jpeg", ".png", ".gif"]:
+        return "image"
+    if ext == ".webp" or fname_upper.startswith("STK-"):
+        return "sticker"
+    if ext in [".mp4", ".3gp", ".mov", ".avi", ".mkv"]:
+        return "video"
+    if ext in [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".vcf"]:
+        return "document"
+    return "attachment"
+
+def extract_chat_title(source_name: str) -> str:
+    """Extracts a clean conversation title from WhatsApp file or zip name."""
+    clean_stem = Path(source_name).stem
+    m = re.search(r"(?:WhatsApp Chat with|Conversa do WhatsApp com)\s+(.+)$", clean_stem, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return clean_stem
 
 def _parse_date(date_str: str) -> str:
     """Normalize date strings to ISO YYYY-MM-DD."""
@@ -56,14 +83,11 @@ def _parse_date(date_str: str) -> str:
     parts = date_str.split(delim)
     if len(parts) == 3:
         p1, p2, p3 = parts[0].strip(), parts[1].strip(), parts[2].strip()
-        # If year is first (YYYY-MM-DD)
         if len(p1) == 4:
             return f"{p1}-{int(p2):02d}-{int(p3):02d}"
-        # If year is last (DD/MM/YYYY or MM/DD/YYYY)
         year = p3
         if len(year) == 2:
             year = "20" + year
-        # Standard WhatsApp export in BR/EU is DD/MM/YYYY
         return f"{year}-{int(p2):02d}-{int(p1):02d}"
     return date_str
 
@@ -74,14 +98,13 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
     current_msg: Optional[ChatMessage] = None
 
     for idx, line in enumerate(lines, 1):
-        clean_line = line.strip("\u200e\u200f\ufeff")  # Strip invisible unicode RTL/LTR marks
+        clean_line = line.strip("\u200e\u200f\ufeff")  # Strip unicode direction marks
         match = ANDROID_PATTERN.match(clean_line) or IOS_PATTERN.match(clean_line) or MD_PATTERN.match(clean_line)
 
         if match:
             date_raw, time_raw, remainder = match.groups()
             date_iso = _parse_date(date_raw)
 
-            # Check if this message has a sender or is a system notification
             if ": " in remainder:
                 sender_part, content_part = remainder.split(": ", 1)
                 sender = sender_part.strip()
@@ -92,13 +115,12 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
                 content = remainder.strip()
                 is_system = True
 
-            # Detect forwarded markers
             content_lower = content.lower()
             is_fwd = any(fwd in content_lower for fwd in FORWARDED_INDICATORS)
 
-            # Detect audio filename reference
-            audio_match = AUDIO_EXT_REGEX.search(content)
-            attachment_file = audio_match.group(0) if audio_match else None
+            att_match = ATTACHMENT_REGEX.search(content)
+            attachment_file = att_match.group(0) if att_match else None
+            attachment_type = classify_attachment(attachment_file) if attachment_file else None
 
             current_msg = ChatMessage(
                 line_number=idx,
@@ -109,18 +131,18 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
                 content=content,
                 is_system=is_system,
                 attachment_filename=attachment_file,
+                attachment_type=attachment_type,
                 is_forwarded=is_fwd
             )
             messages.append(current_msg)
         else:
-            # Multi-line message continuation
             if current_msg:
                 current_msg.content += "\n" + line
-                # Check for audio attachment in subsequent lines
                 if not current_msg.attachment_filename:
-                    audio_match = AUDIO_EXT_REGEX.search(line)
-                    if audio_match:
-                        current_msg.attachment_filename = audio_match.group(0)
+                    att_match = ATTACHMENT_REGEX.search(line)
+                    if att_match:
+                        current_msg.attachment_filename = att_match.group(0)
+                        current_msg.attachment_type = classify_attachment(att_match.group(0))
                 if not current_msg.is_forwarded:
                     if any(fwd in line.lower() for fwd in FORWARDED_INDICATORS):
                         current_msg.is_forwarded = True
