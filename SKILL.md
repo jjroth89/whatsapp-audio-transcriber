@@ -33,37 +33,61 @@ A forensic and agentic skill that processes WhatsApp chat exports (ZIP or folder
 ### 1. Basic Invocation (Standard Extraction + Rezip)
 
 ```bash
-python -m whatsapp_transcriber.cli /path/to/exported_chat.zip --rezip
+whatsapp-transcribe /path/to/exported_chat.zip --rezip
 ```
 
 ### 2. Full Multimodal Extraction (For Vision & Document Agents)
 
 ```bash
-python -m whatsapp_transcriber.cli /path/to/exported_chat.zip --extract-all --rezip
+whatsapp-transcribe /path/to/exported_chat.zip --extract-all --rezip
 ```
 
-### 3. Lean Mode (Max Disk Savings, Artifacts Only)
+### 3. Exclude Heavy Videos (Preserve Documents, Photos, Stickers & Audio)
 
 ```bash
-python -m whatsapp_transcriber.cli /path/to/exported_chat.zip --lean --rezip
+whatsapp-transcribe /path/to/exported_chat.zip --no-videos --rezip
 ```
 
-### 3. Explicit Engine Selection
+### 4. Lean Mode (Max Disk Savings, Artifacts Only)
 
-* **Local NVIDIA GPU (RTX 3090):**
+```bash
+whatsapp-transcribe /path/to/exported_chat.zip --lean --rezip
+```
+
+### 5. Explicit Engine & Model Cache Selection
+
+* **Local NVIDIA GPU (RTX 3090 with cached weights):**
   ```bash
-  python -m whatsapp_transcriber.cli chat.zip --engine local --device cuda --model large-v3 --compute-type float16
+  whatsapp-transcribe chat.zip --engine local --device cuda --model large-v3 --compute-type float16 --model-dir /path/to/weights
   ```
 
 * **Hermes Profile STT Service:**
   ```bash
-  python -m whatsapp_transcriber.cli chat.zip --engine hermes --stt-url "http://localhost:8080/v1/audio/transcriptions"
+  whatsapp-transcribe chat.zip --engine hermes --stt-url "http://localhost:8080/v1/audio/transcriptions"
   ```
+
+## Flag Reference
+
+| Flag | Purpose | Default |
+| :--- | :--- | :--- |
+| `-o`, `--output` | Destination folder | `<slug>_transcribed` |
+| `--rezip` | Package output directory into `<slug>_agent_pack.zip` | `False` |
+| `--extract-all` | Unpack and preserve all media (photos, videos, documents, audios) | `False` |
+| `--no-videos` | Unpack all media and documents except bulky video files | `False` |
+| `--lean` | Delete raw audio files after transcription, leaving only artifacts | `False` |
+| `-e`, `--engine` | STT engine (`auto`, `local`, `hermes`) | `auto` |
+| `-m`, `--model` | Whisper model (`large-v3`, `large-v3-turbo`, `base`, etc.) | `large-v3` |
+| `-d`, `--device` | Device (`auto`, `cuda`, `cpu`) | `auto` |
+| `-c`, `--compute-type` | Precision (`auto`, `float16`, `int8`, `float32`) | `float16` |
+| `--model-dir` | Path to load/cache local Whisper weights | `None` (HuggingFace cache) |
+| `--dict` | Custom vocabulary / specialized terms file (`vocab.txt`) | `vocab.txt` |
+| `--quiet` | Suppress console progress bars and status logs | `False` |
 
 ## Output Artifacts
 
 Each execution outputs:
-- `enriched_chat.md`: Full human- and LLM-readable conversation transcript with inlined voice notes.
+- `enriched_chat.md`: Full human- and LLM-readable conversation transcript with inlined voice notes and relative links to attachments.
 - `enriched_chat.json`: Structured array of message objects with audio metadata, duration, confidence, and timestamps.
-- `audio_audit.json`: SHA-256 hashes, durations, alerts, and processing metrics.
-- `<output_dir>.zip`: Compressed bundle ready for immediate ingestion by ChatGPT Desktop, Claude, or legal analysis workflows.
+- `audio_audit.json`: SHA-256 hashes, durations, alerts, `media_catalog`, and processing metrics.
+- `media/`: Preserved non-video or multimodal media assets (PDFs, images, stickers, audios) depending on the chosen extraction mode.
+- `<slug>_agent_pack.zip`: Self-contained compressed bundle ready for immediate ingestion by ChatGPT Desktop, Claude, or autonomous multi-agent workflows (created when `--rezip` is passed).
