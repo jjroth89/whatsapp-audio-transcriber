@@ -56,7 +56,7 @@ class LocalWhisperTranscriber(BaseTranscriber):
     ) -> Dict[str, Any]:
         target_lang = language or "pt"
 
-        def _run(use_vad: bool):
+        def _run(use_vad: bool, use_batched: bool = True):
             kwargs = {
                 "language": target_lang,
                 "beam_size": self.beam_size,
@@ -65,9 +65,13 @@ class LocalWhisperTranscriber(BaseTranscriber):
                 "condition_on_previous_text": False,
                 "initial_prompt": prompt,
                 "temperature": 0.0,
-                "batch_size": self.batch_size
             }
-            seg_iter, info = self._pipeline.transcribe(str(audio_path), **kwargs)
+            if use_batched:
+                kwargs["batch_size"] = self.batch_size
+                seg_iter, info = self._pipeline.transcribe(str(audio_path), **kwargs)
+            else:
+                seg_iter, info = self._raw_model.transcribe(str(audio_path), **kwargs)
+
             collected_segs = []
             for s in seg_iter:
                 words = []
@@ -90,17 +94,17 @@ class LocalWhisperTranscriber(BaseTranscriber):
 
         retried_no_vad = False
         try:
-            segments, info = _run(use_vad=True)
+            segments, info = _run(use_vad=True, use_batched=True)
         except Exception as exc:
             if "no clip timestamps found" in str(exc).lower():
                 retried_no_vad = True
-                segments, info = _run(use_vad=False)
+                segments, info = _run(use_vad=False, use_batched=False)
             else:
                 raise
 
         if not any(s["text"] for s in segments) and not retried_no_vad:
             retried_no_vad = True
-            segments, info = _run(use_vad=False)
+            segments, info = _run(use_vad=False, use_batched=False)
 
         full_text = " ".join(s["text"] for s in segments if s["text"]).strip()
         alerts = []

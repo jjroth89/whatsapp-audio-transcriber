@@ -50,8 +50,8 @@ If this repository is installed as a skill in Hermes Agent:
   1. Invoke the CLI with the desired extraction mode and packaging:
      ```bash
      whatsapp-transcribe <path_to_zip> -o <output_dir> --rezip
-     # Or for multimodal vision/doc analysis:
-     whatsapp-transcribe <path_to_zip> -o <output_dir> --no-videos --rezip
+     # Or for docs, images, CAD & contacts + video transcripts (purges raw A/V):
+     whatsapp-transcribe <path_to_zip> -o <output_dir> --media docs --transcribe-videos --rezip
      ```
   2. If running inside a container with `HERMES_STT_ENDPOINT` set, the tool will automatically use the profile's STT model.
   3. If running on bare-metal with an NVIDIA GPU, it automatically utilizes CUDA FP16.

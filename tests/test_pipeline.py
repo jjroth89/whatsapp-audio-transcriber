@@ -8,9 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from whatsapp_transcriber.parser import parse_chat_log, ChatMessage
-from whatsapp_transcriber.matcher import match_audios_in_chat
+from whatsapp_transcriber.matcher import match_audios_in_chat, match_audios_and_catalog_media
 from whatsapp_transcriber.vocab import harvest_vocabulary_from_chat
 from whatsapp_transcriber.formatter import generate_enriched_outputs
+from whatsapp_transcriber.vcf import parse_vcf_file
+from whatsapp_transcriber.video import extract_audio_from_video
 
 class TestWhatsAppAudioTranscriber(unittest.TestCase):
 
@@ -112,7 +114,7 @@ PTT-20230510-WA0003.opus (file attached)
 
             f1 = media_dir / "PTT-20240115-WA0001.opus"
             f1.write_bytes(b"dummy")
-            matches = match_audios_in_chat(messages, media_dir)
+            matches, catalog = match_audios_and_catalog_media(messages, media_dir, rename_on_disk=False)
 
             transcriptions = {
                 "PTT-20240115-WA0001.opus": {
@@ -130,6 +132,7 @@ PTT-20230510-WA0003.opus (file attached)
                 messages=messages,
                 transcriptions=transcriptions,
                 audio_matches=matches,
+                catalog_items=catalog,
                 output_dir=out_dir,
                 chat_title="Test Chat"
             )
@@ -146,10 +149,134 @@ PTT-20230510-WA0003.opus (file attached)
 
             # Verify JSON contains structured message objects
             json_data = json.loads(paths["json"].read_text(encoding="utf-8"))
-            self.assertEqual(len(json_data), 6)
-            audio_msg = json_data[2]
+            self.assertEqual(len(json_data["messages"]), 6)
+            audio_msg = json_data["messages"][2]
             self.assertEqual(audio_msg["type"], "audio")
             self.assertEqual(audio_msg["audio_meta"]["filename"], "PTT-20240115-WA0001.opus")
+
+    def test_spaced_filenames_cad_vcf_omitted_edited(self):
+        complex_chat = """15/01/2024 09:10 - Alice: Projeto Estrutural (Rev 02).dwg (file attached)
+15/01/2024 09:12 - Alice: Orçamento Final - Aprovado.pdf (file attached)
+15/01/2024 09:15 - Bob: João Silva.vcf (file attached)
+15/01/2024 09:20 - Bob: <Media omitted>
+15/01/2024 09:25 - Alice: Updated scope confirmed. <This message was edited>
+"""
+        messages = parse_chat_log(complex_chat)
+        self.assertEqual(len(messages), 5)
+        self.assertEqual(messages[0].attachment_filename, "Projeto Estrutural (Rev 02).dwg")
+        self.assertEqual(messages[0].attachment_type, "cad")
+        self.assertEqual(messages[1].attachment_filename, "Orçamento Final - Aprovado.pdf")
+        self.assertEqual(messages[1].attachment_type, "document")
+        self.assertEqual(messages[2].attachment_filename, "João Silva.vcf")
+        self.assertEqual(messages[2].attachment_type, "contact")
+        self.assertTrue(messages[3].is_omitted_media)
+        self.assertTrue(messages[4].is_edited)
+
+    def test_vcf_parser(self):
+        vcard = """BEGIN:VCARD
+VERSION:2.1
+FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:Jo=C3=A3o Silva
+TEL;CELL:+55 41 99999-0000
+ORG:Acme Engineering
+EMAIL:joao@example.com
+END:VCARD
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "contact.vcf"
+            p.write_text(vcard, encoding="utf-8")
+            parsed = parse_vcf_file(p)
+            self.assertEqual(parsed["name"], "João Silva")
+            self.assertEqual(parsed["phones"], ["+55 41 99999-0000"])
+            self.assertEqual(parsed["organization"], "Acme Engineering")
+            self.assertEqual(parsed["emails"], ["joao@example.com"])
+
+    def test_timestamp_renaming_and_purged_retention_manifest(self):
+        chat = """15/01/2024 10:05 - Alice: Planta Baixa.dwg (file attached)
+15/01/2024 10:06 - Alice: PTT-20240115-WA0001.opus (file attached)
+"""
+        messages = parse_chat_log(chat)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            media_dir = work_dir / "media"
+            out_dir = work_dir / "out"
+            media_dir.mkdir()
+
+            dwg = media_dir / "Planta Baixa.dwg"
+            dwg.write_bytes(b"dwg-bytes")
+            opus = media_dir / "PTT-20240115-WA0001.opus"
+            opus.write_bytes(b"opus-bytes")
+
+            matches, catalog = match_audios_and_catalog_media(messages, media_dir, rename_on_disk=True)
+
+            # Non-timestamped CAD file should now be timestamped on disk
+            expected_dwg = media_dir / "2024-01-15_1005_Planta Baixa.dwg"
+            self.assertTrue(expected_dwg.is_file())
+            self.assertEqual(catalog[0].saved_filename, "2024-01-15_1005_Planta Baixa.dwg")
+            self.assertEqual(catalog[0].local_rel_path, "media/2024-01-15_1005_Planta Baixa.dwg")
+
+            # Simulate post-transcription purge of audio per docs/none policy
+            opus.unlink()
+            catalog[1].extracted = False
+            catalog[1].local_rel_path = None
+            catalog[1].retention_status = "transcribed_and_purged"
+
+            transcriptions = {
+                "PTT-20240115-WA0001.opus": {
+                    "text": "Confirmed.",
+                    "duration": 2.0,
+                    "language": "en",
+                    "confidence": 1.0,
+                    "segments": [],
+                    "alerts": [],
+                    "engine": "mock-whisper",
+                }
+            }
+            paths = generate_enriched_outputs(
+                messages=messages,
+                transcriptions=transcriptions,
+                audio_matches=matches,
+                catalog_items=catalog,
+                output_dir=out_dir,
+                chat_title="Retention Test",
+                execution_info={"media_mode": "docs", "transcribe_videos": False, "raw_av_purged_after_transcription": True},
+            )
+
+            md_text = paths["markdown"].read_text(encoding="utf-8")
+            self.assertIn("media/2024-01-15_1005_Planta%20Baixa.dwg", md_text)
+            self.assertIn("SHA-256 verified, transcribed & purged per policy", md_text)
+            self.assertNotIn("(media/PTT-20240115-WA0001.opus)", md_text)
+
+            json_data = json.loads(paths["json"].read_text(encoding="utf-8"))
+            self.assertTrue(json_data["package_policy"]["raw_av_purged_after_transcription"])
+            self.assertEqual(json_data["package_policy"]["transcribed_and_purged"], 1)
+            self.assertEqual(json_data["package_policy"]["retained_in_package"], 1)
+
+    def test_video_audio_extraction(self):
+        import av
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            mp4_path = tmp / "sample.mp4"
+            wav_path = tmp / "out.wav"
+
+            # Generate a tiny silent/sine mp4 with an AAC audio stream using PyAV
+            with av.open(str(mp4_path), mode="w") as container:
+                astream = container.add_stream("aac", rate=44100)
+                astream.layout = "mono"
+                samples = np.zeros((1, 1024), dtype=np.float32)
+                for _ in range(5):
+                    frame = av.AudioFrame.from_ndarray(samples, format="fltp", layout="mono")
+                    frame.sample_rate = 44100
+                    for pkt in astream.encode(frame):
+                        container.mux(pkt)
+                for pkt in astream.encode(None):
+                    container.mux(pkt)
+
+            result = extract_audio_from_video(mp4_path, wav_path)
+            self.assertIsNotNone(result)
+            self.assertTrue(wav_path.is_file())
+            self.assertGreater(wav_path.stat().st_size, 44)
 
 if __name__ == "__main__":
     unittest.main()

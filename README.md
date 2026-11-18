@@ -14,9 +14,12 @@ Designed for AI agent workflows (**Hermes Agent**, **ChatGPT Desktop**, **Claude
 
 ## 🌟 Key Features
 
-* **📦 Flexible Extraction Modes:** Selectively unpacks only audio and chat logs by default, or supports full multimodal unpacking (`--extract-all`), video-omitted unpacking (`--no-videos`), and disk-saving lean mode (`--lean`).
-* **🗜️ Instant Agent Packaging (`--rezip`):** Recompresses the output directory into a standalone ZIP pack ready for immediate upload to cloud agents or ChatGPT Desktop.
-* **🏷️ Semantic Media & Document Tagging:** Automatically detects and tags PDFs, documents, images, and videos with relative links and generates a structured `media_catalog` in the audit JSON.
+* **📦 Unified Media Retention (`--media`):** Choose `audio` (default), `all`, `no-videos`, `docs` (keeps PDFs, images, CAD & contacts while purging raw A/V), or `none` (lean artifacts only).
+* **🎬 Video Audio Transcription (`--transcribe-videos`):** Extracts and transcribes spoken audio from `.mp4`, `.mov`, `.3gp`, and `.mkv` via PyAV (no external `ffmpeg` required)—even when video binaries are excluded from the final pack.
+* **🛡️ Explicit Retention & Provenance Manifest:** Records SHA-256 verification and `transcribed_and_purged` status in `enriched_chat.md`, `enriched_chat.json`, and `audio_audit.json` so downstream AI agents never mistake purged audio/video files for missing data.
+* **🕒 Chronological Document Timestamping:** Automatically prefixes non-timestamped files (`.pdf`, `.dwg`, `.vcf`) with `YYYY-MM-DD_HHMM_` in `media/` with URL-encoded Markdown links.
+* **📇 Native vCard & CAD Support:** Parses `.vcf` contacts inline (`[CONTACT | Name | Phone | Org]`) and classifies AutoCAD/engineering drawings (`[CAD]`: `.dwg`, `.dxf`, `.rvt`, `.ifc`).
+* **🗜️ Instant Agent Packaging (`--rezip`):** Recompresses the output directory into a standalone `<slug>_agent_pack.zip` ready for ChatGPT Desktop or cloud agents.
 * **🎯 Line-Anchored Conversational Placement:** Transcripts are inlined directly at the exact line where the voice note was sent or received.
 * **🛡️ Shared & Forwarded Audio Provenance Detection:** Detects whether an audio note was recorded live in the chat (`PTT-`) or forwarded from another conversation (`AUD-` or date discrepancy). Never misplaces forwarded audios in the timeline!
 * **⚡ High-Performance GPU Inference:** Optimized for **NVIDIA GeForce RTX 3090** (and CUDA 12) using `faster-whisper` (`large-v3` in FP16), with Silero VAD filtering and word-level timestamps.
@@ -83,19 +86,19 @@ pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12
 whatsapp-transcribe /path/to/WhatsApp_Chat.zip --rezip
 ```
 
-**Full Multimodal Extraction (documents, images, audios, and videos):**
+**Docs + Images + CAD + Contacts Only (transcribes audio & videos, purges raw A/V binaries):**
 ```bash
-whatsapp-transcribe /path/to/WhatsApp_Chat.zip --extract-all --rezip
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --media docs --transcribe-videos --rezip
 ```
 
-**Exclude Heavy Videos (documents, images, stickers, and audios):**
+**Full Multimodal Extraction (documents, images, CAD, contacts, audios, and videos):**
 ```bash
-whatsapp-transcribe /path/to/WhatsApp_Chat.zip --no-videos --rezip
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --media all --transcribe-videos --rezip
 ```
 
-**Lean Mode (artifacts only, deletes audio files post-transcription):**
+**Lean Mode (artifacts only, purges all raw media post-transcription):**
 ```bash
-whatsapp-transcribe /path/to/WhatsApp_Chat.zip --lean --rezip
+whatsapp-transcribe /path/to/WhatsApp_Chat.zip --media none --rezip
 ```
 
 ---
@@ -103,36 +106,39 @@ whatsapp-transcribe /path/to/WhatsApp_Chat.zip --lean --rezip
 ## ⚙️ Command-Line Options
 
 ```text
-usage: whatsapp-transcribe [-h] [-o OUTPUT] [-e {auto,local,hermes}]
-                           [-m MODEL] [-d {auto,cuda,cpu}] [-c COMPUTE_TYPE]
-                           [-b BATCH_SIZE] [-l LANGUAGE]
+usage: whatsapp-transcribe [-h] [-o OUTPUT] [-l LANGUAGE]
+                           [--media {audio,all,no-videos,docs,none}]
+                           [--transcribe-videos] [--rezip]
+                           [-e {auto,local,hermes}] [-m MODEL]
+                           [-d {auto,cuda,cpu}] [-c COMPUTE_TYPE]
                            [--model-dir MODEL_DIR] [--dict DICT]
-                           [--stt-url STT_URL] [--api-key API_KEY]
-                           [--extract-all] [--no-videos] [--lean] [--rezip]
-                           [--quiet]
+                           [-b BATCH_SIZE] [--stt-url STT_URL]
+                           [--api-key API_KEY] [-q]
                            input_path
 
-Positional Arguments:
+Core:
   input_path             Path to exported WhatsApp .zip file or folder.
-
-Options:
-  -h, --help             Show this help message and exit.
   -o, --output DIR       Destination folder (default: <input_name>_transcribed).
+  -l, --language CODE    Spoken language code (default: pt).
+
+Media & Packaging:
+  --media MODE           Retention policy: audio (default), all, no-videos, docs, none.
+  --transcribe-videos    Extract & transcribe audio tracks from video files.
+  --rezip                Bundle final output directory into <output>_agent_pack.zip.
+
+Engine & Model:
   -e, --engine CHOICE    STT engine: auto, local, or hermes (default: auto).
   -m, --model MODEL      Whisper model name (default: large-v3).
-  -d, --device DEVICE    Device: auto, cuda, or cpu (default: auto).
+  -d, --device DEVICE    Hardware device: auto, cuda, or cpu (default: auto).
   -c, --compute-type PRE Precision: auto, float16, int8_float16, int8, float32.
-  -b, --batch-size NUM   Inference batch size.
-  -l, --language CODE    Spoken language code (e.g. pt, en, es).
-  --model-dir DIR        Custom folder for loading/caching Whisper model weights.
-  --dict FILE            Custom dictionary file for specialized terms (vocab.txt).
-  --stt-url URL          Endpoint URL for Hermes Profile or OpenAI STT.
+  --model-dir DIR        Custom folder for loading/caching Whisper weights.
+  --dict FILE            Custom vocabulary file (vocab.txt).
+
+Advanced / Remote STT:
+  -b, --batch-size NUM   Inference batch size (default: 8).
+  --stt-url URL          Custom endpoint URL for Hermes STT profile.
   --api-key KEY          API key for Hermes or OpenAI STT service.
-  --extract-all          Unpack and preserve all media (photos, videos, documents, audio).
-  --no-videos            Unpack all media and documents except large video files.
-  --lean                 Purge raw audio files after transcription, leaving only artifacts.
-  --rezip                Rezip the final output folder into a compact agent bundle.
-  --quiet                Suppress console progress logs.
+  -q, --quiet            Suppress progress output.
 ```
 
 ---

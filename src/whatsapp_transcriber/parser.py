@@ -14,8 +14,10 @@ class ChatMessage:
     content: str
     is_system: bool = False
     attachment_filename: Optional[str] = None
-    attachment_type: Optional[str] = None  # "audio", "image", "video", "document", "sticker", "attachment"
+    attachment_type: Optional[str] = None  # "audio", "image", "video", "document", "cad", "contact", "archive", "sticker", "attachment"
     is_forwarded: bool = False
+    is_edited: bool = False
+    is_omitted_media: bool = False
     parsed_datetime: Optional[datetime] = None
 
 # Regex patterns for Android, iOS, and Markdown formats
@@ -31,10 +33,29 @@ MD_PATTERN = re.compile(
     r"^\*{0,2}\[(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+?)\*{0,2}:\s*(.*?)$"
 )
 
-# Matches any media or document attachment reference in WhatsApp logs
+KNOWN_EXTENSIONS = (
+    "opus|ogg|m4a|mp3|wav|aac|flac|"
+    "jpg|jpeg|png|webp|gif|heic|bmp|tiff|"
+    "mp4|3gp|mov|avi|mkv|webm|"
+    "pdf|docx?|xlsx?|pptx?|csv|txt|odt|ods|rtf|"
+    "dwg|dxf|rvt|ifc|skp|step|stp|"
+    "vcf|zip|rar|7z"
+)
+
+# Explicit WhatsApp attachment wrappers (preserves spaces, accents, and special chars)
+ANDROID_ATTACH_REGEX = re.compile(
+    r"^(.+?\.[A-Za-z0-9]{2,6})\s*\((?:file attached|arquivo anexado|ficheiro anexado)\)",
+    re.IGNORECASE,
+)
+IOS_ATTACH_REGEX = re.compile(
+    r"<(?:attached|anexado):\s*(.+?\.[A-Za-z0-9]{2,6})>",
+    re.IGNORECASE,
+)
+
+# Fallback for plain/unwrapped attachment mentions
 ATTACHMENT_REGEX = re.compile(
-    r"[\w\.\-]+\.(?:opus|ogg|m4a|mp3|wav|aac|flac|jpg|jpeg|png|webp|gif|mp4|3gp|mov|avi|mkv|pdf|docx?|xlsx?|csv|vcf|zip)",
-    re.IGNORECASE
+    rf"[\w\.\-\(\)\u00C0-\u017F]+\.(?:{KNOWN_EXTENSIONS})\b",
+    re.IGNORECASE,
 )
 
 FORWARDED_INDICATORS = [
@@ -45,8 +66,44 @@ FORWARDED_INDICATORS = [
     "<reenviado>",
     "reenviado",
     "[mensagem encaminhada]",
-    "[forwarded]"
+    "[forwarded]",
 ]
+
+OMITTED_MEDIA_INDICATORS = [
+    "<media omitted>",
+    "<mídia oculta>",
+    "<midia oculta>",
+    "image omitted",
+    "video omitted",
+    "audio omitted",
+    "document omitted",
+    "sticker omitted",
+    "imagem ocultada",
+    "vídeo ocultado",
+    "áudio ocultado",
+    "documento ocultado",
+]
+
+EDITED_INDICATORS = [
+    "<this message was edited>",
+    "this message was edited",
+    "<mensagem editada>",
+    "esta mensagem foi editada",
+]
+
+def extract_attachment_filename(text: str) -> Optional[str]:
+    """Extract attachment filename, preserving spaces/accents inside WhatsApp attachment markers."""
+    clean = text.strip().strip("\u200e\u200f\ufeff")
+    m = ANDROID_ATTACH_REGEX.search(clean)
+    if m:
+        return m.group(1).strip().strip("\u200e\u200f\ufeff")
+    m = IOS_ATTACH_REGEX.search(clean)
+    if m:
+        return m.group(1).strip().strip("\u200e\u200f\ufeff")
+    m = ATTACHMENT_REGEX.search(clean)
+    if m:
+        return m.group(0).strip()
+    return None
 
 def classify_attachment(filename: str) -> str:
     """Classifies attachment filename into a semantic category."""
@@ -54,13 +111,19 @@ def classify_attachment(filename: str) -> str:
     fname_upper = filename.upper()
     if ext in [".opus", ".ogg", ".m4a", ".mp3", ".wav", ".aac", ".flac"]:
         return "audio"
-    if ext in [".jpg", ".jpeg", ".png", ".gif"]:
+    if ext in [".jpg", ".jpeg", ".png", ".gif", ".heic", ".bmp", ".tiff"]:
         return "image"
     if ext == ".webp" or fname_upper.startswith("STK-"):
         return "sticker"
-    if ext in [".mp4", ".3gp", ".mov", ".avi", ".mkv"]:
+    if ext in [".mp4", ".3gp", ".mov", ".avi", ".mkv", ".webm"]:
         return "video"
-    if ext in [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".vcf"]:
+    if ext in [".dwg", ".dxf", ".rvt", ".ifc", ".skp", ".step", ".stp"]:
+        return "cad"
+    if ext == ".vcf":
+        return "contact"
+    if ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
+        return "archive"
+    if ext in [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".pptx", ".ppt", ".txt", ".odt", ".ods", ".rtf"]:
         return "document"
     return "attachment"
 
@@ -117,9 +180,10 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
 
             content_lower = content.lower()
             is_fwd = any(fwd in content_lower for fwd in FORWARDED_INDICATORS)
+            is_omitted = any(om in content_lower for om in OMITTED_MEDIA_INDICATORS)
+            is_edited = any(ed in content_lower for ed in EDITED_INDICATORS)
 
-            att_match = ATTACHMENT_REGEX.search(content)
-            attachment_file = att_match.group(0) if att_match else None
+            attachment_file = extract_attachment_filename(content)
             attachment_type = classify_attachment(attachment_file) if attachment_file else None
 
             current_msg = ChatMessage(
@@ -132,19 +196,28 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
                 is_system=is_system,
                 attachment_filename=attachment_file,
                 attachment_type=attachment_type,
-                is_forwarded=is_fwd
+                is_forwarded=is_fwd,
+                is_edited=is_edited,
+                is_omitted_media=is_omitted,
             )
             messages.append(current_msg)
         else:
             if current_msg:
                 current_msg.content += "\n" + line
+                line_lower = line.lower()
                 if not current_msg.attachment_filename:
-                    att_match = ATTACHMENT_REGEX.search(line)
-                    if att_match:
-                        current_msg.attachment_filename = att_match.group(0)
-                        current_msg.attachment_type = classify_attachment(att_match.group(0))
+                    att_file = extract_attachment_filename(line)
+                    if att_file:
+                        current_msg.attachment_filename = att_file
+                        current_msg.attachment_type = classify_attachment(att_file)
                 if not current_msg.is_forwarded:
-                    if any(fwd in line.lower() for fwd in FORWARDED_INDICATORS):
+                    if any(fwd in line_lower for fwd in FORWARDED_INDICATORS):
                         current_msg.is_forwarded = True
+                if not current_msg.is_edited:
+                    if any(ed in line_lower for ed in EDITED_INDICATORS):
+                        current_msg.is_edited = True
+                if not current_msg.is_omitted_media:
+                    if any(om in line_lower for om in OMITTED_MEDIA_INDICATORS):
+                        current_msg.is_omitted_media = True
 
     return messages
