@@ -399,7 +399,7 @@ Orçamento Final.pdf (arquivo anexado)
                 [[[0, 2], [10, 2], [10, 10], [0, 10]], "Alice first", 0.8],
             ], 0.01)
         result = _recognize("synthetic.png", engine)
-        self.assertEqual(result["text"], "Alice first\\nBob second")
+        self.assertEqual(result["text"], "Alice first\nBob second")
         self.assertAlmostEqual(result["confidence"], 0.85)
 
     def test_image_ocr_without_text_and_with_failure(self):
