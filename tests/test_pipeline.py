@@ -3,6 +3,7 @@ import tempfile
 import json
 import sys
 import zipfile
+import importlib.util
 from unittest.mock import patch
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from whatsapp_transcriber.formatter import generate_enriched_outputs
 from whatsapp_transcriber.vcf import parse_vcf_file
 from whatsapp_transcriber.video import extract_audio_from_video
 from whatsapp_transcriber.cli import create_agent_pack, copy_folder_input, selective_unpack, main
+from whatsapp_transcriber.ocr import extract_image_text, extract_pdf_text, _recognize
 
 class TestWhatsAppAudioTranscriber(unittest.TestCase):
 
@@ -388,6 +390,141 @@ Orçamento Final.pdf (arquivo anexado)
                                            "--output", str(out), "--quiet"]):
                 with self.assertRaises(FileExistsError):
                     main()
+
+
+    def test_ocr_rapidocr_tuple_is_sorted_by_geometry(self):
+        def engine(_):
+            return ([
+                [[[0, 20], [10, 20], [10, 28], [0, 28]], "Bob second", 0.9],
+                [[[0, 2], [10, 2], [10, 10], [0, 10]], "Alice first", 0.8],
+            ], 0.01)
+        result = _recognize("synthetic.png", engine)
+        self.assertEqual(result["text"], "Alice first\\nBob second")
+        self.assertAlmostEqual(result["confidence"], 0.85)
+
+    def test_image_ocr_without_text_and_with_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            img = Path(tmp) / "blank.png"
+            img.write_bytes(b"synthetic image placeholder")
+            self.assertEqual(
+                extract_image_text(img, lambda _: (None, 0.02))["status"],
+                "no_text_detected"
+            )
+            def fails(_):
+                raise ValueError("synthetic backend failure")
+            result = extract_image_text(img, fails)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error"], "ValueError")
+
+    @unittest.skipUnless(importlib.util.find_spec("pypdf") is not None,
+                         "pip install -e .[ocr]")
+    def test_pdf_native_text_extraction(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Alice-Agreement.pdf"
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=200, height=200)
+            font = DictionaryObject({
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            })
+            font_ref = writer._add_object(font)
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})
+            })
+            content = DecodedStreamObject()
+            content.set_data(b"BT /F1 12 Tf 10 100 Td (Alice and Bob agreed) Tj ET")
+            page[NameObject("/Contents")] = writer._add_object(content)
+            with path.open("wb") as output:
+                writer.write(output)
+            def never_call_ocr(_):
+                raise AssertionError("Native text must not invoke OCR")
+            result = extract_pdf_text(path, never_call_ocr)
+            self.assertEqual(result["status"], "extracted")
+            self.assertIn("Alice and Bob agreed", result["text"])
+            self.assertEqual(result["pages"][0]["method"], "pdf_native")
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("pypdf") is not None
+        and importlib.util.find_spec("pypdfium2") is not None,
+        "pip install -e .[ocr]")
+    def test_scanned_pdf_blank_page_falls_back_to_rapidocr(self):
+        from pypdf import PdfWriter
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Scanned-Charlie.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=200, height=200)
+            with path.open("wb") as f:
+                writer.write(f)
+            inputs = []
+            def fake_engine(image):
+                inputs.append(image)
+                return ([[
+                    [[0, 0], [50, 0], [50, 14], [0, 14]],
+                    "Charlie receipt", 0.99
+                ]], 0.01)
+            result = extract_pdf_text(path, fake_engine)
+            self.assertEqual(result["status"], "extracted")
+            self.assertEqual(result["pages"][0]["method"], "rapidocr")
+            self.assertEqual(result["text"], "Charlie receipt")
+            self.assertEqual(len(inputs), 1)
+
+    def test_ocr_extracted_text_is_linked_to_message_and_json(self):
+        messages = parse_chat_log(
+            "15/01/2024 09:20 - Alice: Receipt.png (file attached)"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "media"
+            media.mkdir()
+            (media / "Receipt.png").write_bytes(b"synthetic")
+            _, catalog = match_audios_and_catalog_media(messages, media)
+            catalog[0].text_extraction = {
+                "status": "extracted", "method": "rapidocr",
+                "text": "Alice paid Bob", "pages": []
+            }
+            output = Path(tmp) / "output"
+            files = generate_enriched_outputs(messages, {}, [], catalog, output,
+                                             chat_title="Synthetic Receipt",
+                                             execution_info={"ocr": True})
+            md = files["markdown"].read_text(encoding="utf-8")
+            self.assertIn('> [OCR]: "Alice paid Bob"', md)
+            payload = json.loads(files["json"].read_text(encoding="utf-8"))
+            self.assertEqual(payload["messages"][0]["attachment"]["text_extraction"]["status"],
+                             "extracted")
+            self.assertEqual(payload["messages"][0]["attachment"]["text_extraction"]["text"],
+                             "Alice paid Bob")
+
+    def test_ocr_media_none_preserves_text_but_not_pdf_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "synthetic.zip"
+            with zipfile.ZipFile(source, "w") as zf:
+                zf.writestr("_chat.txt",
+                    "15/01/2024 10:00 - Alice: Receipt.pdf (file attached)")
+                zf.writestr("Receipt.pdf", b"synthetic placeholder")
+            with patch.object(sys, "argv", [
+                "whatsapp-transcribe", str(source), "--media", "none",
+                "--ocr", "--rezip", "--quiet"
+            ]), patch(
+                "whatsapp_transcriber.ocr.create_ocr_engine", return_value=object()
+            ), patch(
+                "whatsapp_transcriber.ocr.extract_media_text",
+                return_value={"status": "extracted", "method": "pdf_native",
+                              "text": "Alice receipt", "pages": []}
+            ), patch(
+                "whatsapp_transcriber.cli.create_transcriber",
+                side_effect=AssertionError("No audio should initialize no STT")
+            ):
+                main()
+            output = work / "synthetic_transcribed"
+            data = json.loads((output / "enriched_chat.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["messages"][0]["attachment"]["text_extraction"]["text"],
+                             "Alice receipt")
+            with zipfile.ZipFile(work / "synthetic_transcribed_agent_pack.zip") as zf:
+                self.assertNotIn("media/Receipt.pdf", zf.namelist())
+                self.assertIn("enriched_chat.json", zf.namelist())
 
     def test_video_audio_extraction(self):
         import av
