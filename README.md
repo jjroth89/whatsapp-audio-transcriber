@@ -16,7 +16,7 @@ Designed for AI agent workflows (**Hermes Agent**, **ChatGPT Desktop**, **Claude
 
 * **📦 Unified Media Retention (`--media`):** Choose `audio` (default), `all`, `no-videos`, `docs` (keeps PDFs, images, CAD & contacts while omitting original A/V), or `none` (lean artifacts only).
 * **🎬 Video Audio Transcription (`--transcribe-videos`):** Extracts and transcribes spoken audio from `.mp4`, `.mov`, `.3gp`, and `.mkv` via PyAV (no external `ffmpeg` required)—even when video binaries are excluded from the final pack.
-* **🛡️ Explicit Retention & Provenance Manifest:** Records evidence-backed source/retention categories and truthful `complete_text_corpus` status (`schema_version: 2`); unverified sources remain visibly partial.
+* **🛡️ Explicit Retention & Provenance Manifest:** Records evidence-backed source/retention categories, `pipeline_processing_status`, `partial_reasons`, and truthful `complete_text_corpus` status (`schema_version: 2`) so agents distinguish pipeline completion from WhatsApp `<Media omitted>` placeholders.
 * **🕒 Chronological Document Timestamping:** Automatically prefixes non-timestamped files (`.pdf`, `.dwg`, `.vcf`) with `YYYY-MM-DD_HHMM_` in `media/` with URL-encoded Markdown links.
 * **📇 Native vCard & CAD Support:** Parses `.vcf` contacts inline (`[CONTACT | Name | Phone | Org]`) and classifies AutoCAD/engineering drawings (`[CAD]`: `.dwg`, `.dxf`, `.rvt`, `.ifc`).
 * **🗜️ Instant Agent Packaging (`--rezip`):** Packages the canonical enriched artifacts plus retained `media/` into a standalone `<slug>_agent_pack.zip` ready for ChatGPT Desktop or cloud agents.
