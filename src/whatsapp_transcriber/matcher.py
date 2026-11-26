@@ -34,6 +34,7 @@ class MediaCatalogItem:
     saved_filename: Optional[str] = None
     retention_status: str = "retained_original"
     attachment_evidence: Optional[str] = None
+    text_extraction: Optional[Dict[str, Any]] = None
     sha256: Optional[str] = None
     size_bytes: Optional[int] = None
     contact_info: Optional[Dict[str, Any]] = None
