@@ -75,6 +75,9 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 # Install dependencies and CLI
 pip install -e .
 
+# For optional PDF/image OCR (no cloud service, no Tesseract executable):
+pip install -e '.[ocr]'
+
 # For NVIDIA GPU acceleration (CUDA 12):
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12
 ```
@@ -96,19 +99,29 @@ whatsapp-transcribe /path/to/WhatsApp_Chat.zip --media docs --transcribe-videos 
 whatsapp-transcribe /path/to/WhatsApp_Chat.zip --media all --transcribe-videos --rezip
 ```
 
-**Lean Mode (artifacts only, purges all raw media post-transcription):**
+**Lean Mode (artifacts only, omits all original media after extraction):**
 ```bash
 whatsapp-transcribe /path/to/WhatsApp_Chat.zip --media none --rezip
 ```
 
 ---
 
+**Local document/photo text extraction (optional):**
+```bash
+pip install -e '.[ocr]'
+whatsapp-transcribe chat.zip --media docs --ocr --rezip
+```
+
+The `--ocr` flag uses `pypdf` for embedded PDF text, `pypdfium2` to render text-free PDF pages, and local `rapidocr-onnxruntime` 1.4.x for those pages and JPEG/PNG photos. No external Tesseract binary or cloud OCR is called. The base installation has no OCR dependencies. The `attachment.text_extraction` JSON field preserves page-level method/status, full extracted text and a concise Markdown `[OCR]` excerpt. Blank photos do not receive invented text. Failed OCR is reported as failed, not silently counted as verified.
+
+OCR backends may vary across hardware/platforms; the ordering and schema are deterministic but word-level OCR identity across every machine is not guaranteed. On Python 3.13+, check optional RapidOCR wheel availability; Python 3.10–3.12 is the recommended OCR environment.
+
 ## ⚙️ Command-Line Options
 
 ```text
 usage: whatsapp-transcribe [-h] [-o OUTPUT] [-l LANGUAGE]
                            [--media {audio,all,no-videos,docs,none}]
-                           [--transcribe-videos] [--rezip]
+                           [--transcribe-videos] [--rezip] [--ocr]
                            [-e {auto,local,hermes}] [-m MODEL]
                            [-d {auto,cuda,cpu}] [-c COMPUTE_TYPE]
                            [--model-dir MODEL_DIR] [--dict DICT]
@@ -124,7 +137,8 @@ Core:
 Media & Packaging:
   --media MODE           Retention policy: audio (default), all, no-videos, docs, none.
   --transcribe-videos    Extract & transcribe audio tracks from video files.
-  --rezip                Bundle final output directory into <output>_agent_pack.zip.
+  --rezip                Bundle enriched artifacts and retained media.
+  --ocr                  Optional local PDF text and JPEG/PNG OCR ([ocr] extra).
 
 Engine & Model:
   -e, --engine CHOICE    STT engine: auto, local, or hermes (default: auto).
