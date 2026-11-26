@@ -21,15 +21,15 @@ Target: eliminate downstream AI agent "missing media / incomplete verification" 
 
 ---
 
-## `v1.3.0` — Local Deterministic Document & Photo Text Extraction (`enhancement`)
+## `v1.3.0` — Local Deterministic Document & Photo Text Extraction (`enhancement`, implemented on feature branch)
 
 Target: pre-extract text from PDFs and images locally before cloud LLM ingestion, minimizing reliance on downstream agent OCR/reading.
 
-- [ ] **Native PDF Text Extraction (`pymupdf` / `fitz`):**
+- [x] **Native PDF Text Extraction (`pymupdf` / `fitz`):**
   - Extract embedded text deterministically from PDF attachments in `media/`.
   - Store extracted text in `enriched_chat.json` (and reference/inline cleanly in `enriched_chat.md`).
   - Automatically detect scanned/image-only PDFs (0 extracted characters) and route them to OCR.
-- [ ] **Local Photo & Scanned-PDF OCR (`rapidocr-onnxruntime` via optional `[ocr]` extra / `--ocr` flag):**
+- [x] **Local Photo & Scanned-PDF OCR (`rapidocr-onnxruntime` via optional `[ocr]` extra / `--ocr` flag):**
   - Pure-`pip` ONNX OCR with zero external binary installers required on Windows/Linux/macOS.
   - Extract text from `.jpg`/`.png` photos (receipts, bank slips, screenshots, handwritten/printed notes) and scanned PDF pages.
   - Inline `> [OCR]: "..."` under `[IMAGE]` / `[DOCUMENT]` entries; cleanly tag text-free visual photos.
@@ -37,3 +37,7 @@ Target: pre-extract text from PDFs and images locally before cloud LLM ingestion
 ### v1.2.1 verification note
 
 Synthetic coverage includes filename-prose false positives, explicit missing references, duplicate flattened basenames, agent ZIP allowlisting with legitimate text documents, folder-source preservation, stale-output rejection and truthful schema-v2 coverage. Local runner acceptance is tracked separately; unchecked v1.3.0 items remain pending.
+
+### v1.3.0 verification note
+
+The optional `[ocr]` extra uses pypdf + pypdfium2 (permissive-license route) and rapidocr-onnxruntime 1.4.x. Synthetic tests exercise native PDF, blank/scanned fallback, image success/no-text/failure and `--media none --ocr` packaging. Local runner verification is recorded separately; these checkboxes describe source implementation, not a claim of passing platform tests.
