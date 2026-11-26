@@ -1,7 +1,7 @@
 ---
 name: whatsapp-audio-transcriber
 description: "Automatically transcribes audio voice notes in exported WhatsApp chat archives (.zip or folder), aligns them chronologically, semantically tags documents/media, and embeds transcripts directly into conversation Markdown and JSON timelines."
-version: 1.2.0
+version: 1.2.1
 author: Hermes Agent
 license: MIT
 platforms: [linux, windows, macos, docker, container]
@@ -24,8 +24,7 @@ A forensic and agentic skill that processes WhatsApp chat exports (ZIP or folder
    - **`--media none`:** Lean mode — purges all raw media after transcription, leaving only compact text/JSON artifacts.
    - **`--transcribe-videos`:** Extracts & transcribes spoken audio from video files via PyAV (even if video binaries are purged).
    - **`--rezip`:** Compresses final deliverables into a ready-to-share `<slug>_agent_pack.zip` bundle for cloud agents or ChatGPT Desktop.
-2. **Explicit Retention & Provenance Manifest:** Records SHA-256 hashes and `transcribed_and_purged` status in `package_policy` and `enriched_chat.md` so downstream agents know purged A/V files were verified and transcribed (not missing).
-3. **Semantic Tagging, vCard Inlining & Timestamped Docs:** Classifies `[CAD]`, `[CONTACT]` (inline parsed `.vcf` details), `[DOCUMENT]`, `[IMAGE]`, `[VIDEO]`, `[STICKER]` and prefixes non-timestamped docs/CAD files with `YYYY-MM-DD_HHMM_` in `media/` with URL-encoded Markdown links.
+2. **Complete Text Corpus Contract (schema v2):** Distinguishes verified audio text equivalents, retained originals, source-unavailable references and policy packaging without claiming that unread PDFs/images were interpreted.\n3. **Semantic Tagging, vCard Inlining & Timestamped Docs:** Classifies `[CAD]`, `[CONTACT]` (inline parsed `.vcf` details), `[DOCUMENT]`, `[IMAGE]`, `[VIDEO]`, `[STICKER]` and prefixes non-timestamped docs/CAD files with `YYYY-MM-DD_HHMM_` in `media/` with URL-encoded Markdown links.
 3. **Conversation Anchoring:** Transcripts are inlined at the exact line in the conversation where the audio was sent or received.
 4. **Shared / Forwarded Audio Discrepancy Detection:** Prevents timeline distortion when forwarded audios carry older filename timestamps. Identifies origin dates and tags them as `[FORWARDED/SHARED AUDIO]`.
 5. **Adaptive Hardware & Cache Engine:** Automatically runs in CUDA FP16 mode on NVIDIA GPUs (e.g., RTX 3090) with zero setup, with graceful 8-bit quantized CPU fallback for portable systems. Reuses existing model caches without re-downloading.
