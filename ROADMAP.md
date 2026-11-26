@@ -4,19 +4,19 @@ This document tracks planned bug fixes, determinism improvements, and feature en
 
 ---
 
-## `v1.2.1` — Deterministic Corpus Hardening (`bug` / `enhancement`)
+## `v1.2.1` — Deterministic Corpus Hardening (implemented on feature branch) (`bug` / `enhancement`)
 
 Target: eliminate downstream AI agent "missing media / incomplete verification" disclaimers when ingesting `*_agent_pack.zip`.
 
-- [ ] **Fix false-positive attachment matching (`parser.py`):**
+- [x] **Fix false-positive attachment matching (`parser.py`):**
   - Only classify a line as a file attachment if it carries an explicit WhatsApp attachment marker (`(file attached)`, `(arquivo anexado)`, `<attached: ...>`) or matches a real filename present in the source archive/directory.
   - Prevent plain-text mentions (e.g., `"send as .pdf"`, `"contract.docx"`) from being tagged as `missing_from_export`.
-- [ ] **Exclude raw `.txt` export from `*_agent_pack.zip` (`cli.py`):**
+- [x] **Exclude raw `.txt` export from `*_agent_pack.zip` (`cli.py`):**
   - Keep `enriched_chat.md` and `enriched_chat.json` as the sole canonical conversation sources inside `--rezip` bundles so downstream agents do not cross-check raw `.opus` lines against `media/`.
-- [ ] **Reframe retention manifest as a Complete Text Corpus (`formatter.py`):**
+- [x] **Reframe retention manifest as a Complete Text Corpus (`formatter.py`):**
   - Replace alarmist status wording (`purged`, `excluded`, `missing`) with positive, unambiguous corpus framing (`complete_text_corpus`, `text_equivalent_verified`, `decorative_stickers_skipped`).
   - Add an explicit ingestion contract header instructing downstream LLMs not to flag transcribed A/V streams or skipped stickers as missing data.
-- [ ] **Add Top-of-File Corpus Index (`formatter.py`):**
+- [x] **Add Top-of-File Corpus Index (`formatter.py`):**
   - Generate a compact inventory table at the top of `enriched_chat.md` listing all retained PDFs, CAD drawings, `.vcf` contacts, and images with their timestamps and relative links.
 
 ---
@@ -33,3 +33,7 @@ Target: pre-extract text from PDFs and images locally before cloud LLM ingestion
   - Pure-`pip` ONNX OCR with zero external binary installers required on Windows/Linux/macOS.
   - Extract text from `.jpg`/`.png` photos (receipts, bank slips, screenshots, handwritten/printed notes) and scanned PDF pages.
   - Inline `> [OCR]: "..."` under `[IMAGE]` / `[DOCUMENT]` entries; cleanly tag text-free visual photos.
+
+### v1.2.1 verification note
+
+Synthetic coverage includes filename-prose false positives, explicit missing references, duplicate flattened basenames, agent ZIP allowlisting with legitimate text documents, folder-source preservation, stale-output rejection and truthful schema-v2 coverage. Local runner acceptance is tracked separately; unchecked v1.3.0 items remain pending.
