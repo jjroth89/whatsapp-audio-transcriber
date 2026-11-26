@@ -14,12 +14,12 @@ Designed for AI agent workflows (**Hermes Agent**, **ChatGPT Desktop**, **Claude
 
 ## 🌟 Key Features
 
-* **📦 Unified Media Retention (`--media`):** Choose `audio` (default), `all`, `no-videos`, `docs` (keeps PDFs, images, CAD & contacts while purging raw A/V), or `none` (lean artifacts only).
+* **📦 Unified Media Retention (`--media`):** Choose `audio` (default), `all`, `no-videos`, `docs` (keeps PDFs, images, CAD & contacts while omitting original A/V), or `none` (lean artifacts only).
 * **🎬 Video Audio Transcription (`--transcribe-videos`):** Extracts and transcribes spoken audio from `.mp4`, `.mov`, `.3gp`, and `.mkv` via PyAV (no external `ffmpeg` required)—even when video binaries are excluded from the final pack.
-* **🛡️ Explicit Retention & Provenance Manifest:** Records SHA-256 verification and `transcribed_and_purged` status in `enriched_chat.md`, `enriched_chat.json`, and `audio_audit.json` so downstream AI agents never mistake purged audio/video files for missing data.
+* **🛡️ Explicit Retention & Provenance Manifest:** Records evidence-backed source/retention categories and truthful `complete_text_corpus` status (`schema_version: 2`); unverified sources remain visibly partial.
 * **🕒 Chronological Document Timestamping:** Automatically prefixes non-timestamped files (`.pdf`, `.dwg`, `.vcf`) with `YYYY-MM-DD_HHMM_` in `media/` with URL-encoded Markdown links.
 * **📇 Native vCard & CAD Support:** Parses `.vcf` contacts inline (`[CONTACT | Name | Phone | Org]`) and classifies AutoCAD/engineering drawings (`[CAD]`: `.dwg`, `.dxf`, `.rvt`, `.ifc`).
-* **🗜️ Instant Agent Packaging (`--rezip`):** Recompresses the output directory into a standalone `<slug>_agent_pack.zip` ready for ChatGPT Desktop or cloud agents.
+* **🗜️ Instant Agent Packaging (`--rezip`):** Packages the canonical enriched artifacts plus retained `media/` into a standalone `<slug>_agent_pack.zip` ready for ChatGPT Desktop or cloud agents.
 * **🎯 Line-Anchored Conversational Placement:** Transcripts are inlined directly at the exact line where the voice note was sent or received.
 * **🛡️ Shared & Forwarded Audio Provenance Detection:** Detects whether an audio note was recorded live in the chat (`PTT-`) or forwarded from another conversation (`AUD-` or date discrepancy). Never misplaces forwarded audios in the timeline!
 * **⚡ High-Performance GPU Inference:** Optimized for **NVIDIA GeForce RTX 3090** (and CUDA 12) using `faster-whisper` (`large-v3` in FP16), with Silero VAD filtering and word-level timestamps.
@@ -186,3 +186,11 @@ To use it inside Hermes:
 
 Released under the [MIT License](LICENSE).
 Created by [jjroth89](https://github.com/jjroth89).
+
+## v1.2.1 — Deterministic Corpus Contract
+
+The exported raw conversation file is used as input but is **not** included in `*_agent_pack.zip`. The package contains `enriched_chat.md`, `enriched_chat.json`, `audio_audit.json`, and selected `media/` assets (including legitimate `.txt` documents). Source input files are never modified. When using a directory input, select an output directory outside that source.
+
+Attachment classification requires either an explicit WhatsApp marker or an exact filename present in the source inventory; a plain mention of `contract.docx` without such evidence remains normal text. Duplicate basenames and nonempty output directories are rejected instead of silently losing or repackaging data.
+
+The `package_policy.schema_version=2` / `complete_text_corpus.status` describes what could actually be verified **within the supplied export**, never completeness of all real-world communications or interpretation of document images. A partial result is evidence of a genuine unverified media reference, not a missing file inferred from arbitrary prose. The Markdown starts with a Document, Contact & Photo Index of retained, linked files.
