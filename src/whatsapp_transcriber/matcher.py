@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .parser import ChatMessage
+from .parser import ChatMessage, classify_attachment
 from .vcf import parse_vcf_file
 
 
@@ -32,7 +32,9 @@ class MediaCatalogItem:
     extracted: bool
     local_rel_path: Optional[str] = None
     saved_filename: Optional[str] = None
-    retention_status: str = "retained"  # retained | transcribed_and_purged | cataloged_only_not_extracted | missing_from_export
+    retention_status: str = "retained_original"
+    attachment_evidence: Optional[str] = None
+    text_extraction: Optional[Dict[str, Any]] = None
     sha256: Optional[str] = None
     size_bytes: Optional[int] = None
     contact_info: Optional[Dict[str, Any]] = None
@@ -122,20 +124,25 @@ def match_audios_and_catalog_media(
     """
     disk_index: Dict[str, Path] = {}
     if media_dir.exists():
-        for p in media_dir.rglob("*"):
+        for p in sorted(media_dir.rglob("*"), key=lambda item: item.as_posix().casefold()):
             if p.is_file():
-                disk_index[p.name.lower()] = p
+                key = p.name.casefold()
+                if key in disk_index and disk_index[key] != p:
+                    raise ValueError(f"Ambiguous media basename: {p.name}")
+                disk_index[key] = p
 
     used_names: Set[str] = {p.name.lower() for p in disk_index.values()}
     audio_matches: List[AudioAttachmentMatch] = []
     catalog_items: List[MediaCatalogItem] = []
+    referenced_names: Set[str] = set()
 
     for idx, msg in enumerate(messages, 1):
         if not msg.attachment_filename:
             continue
 
         fname = msg.attachment_filename
-        fname_lower = fname.lower()
+        fname_lower = fname.casefold()
+        referenced_names.add(fname_lower)
         matched_path = disk_index.get(fname_lower)
         extracted = matched_path is not None
         att_type = msg.attachment_type or "attachment"
@@ -163,14 +170,14 @@ def match_audios_and_catalog_media(
                     matched_path = updated_path
                     saved_name = updated_path.name
 
-            retention_status = "retained"
+            retention_status = "retained_original"
             rel_path = f"media/{saved_name}"
         else:
             rel_path = None
             if available_in_source is not None and fname_lower in available_in_source:
-                retention_status = "cataloged_only_not_extracted"
+                retention_status = "not_packaged_by_choice"
             else:
-                retention_status = "missing_from_export"
+                retention_status = "source_reference_unavailable"
 
         catalog_items.append(MediaCatalogItem(
             message_index=idx,
@@ -185,6 +192,7 @@ def match_audios_and_catalog_media(
             size_bytes=size_bytes,
             local_rel_path=rel_path,
             contact_info=contact_info,
+            attachment_evidence=msg.attachment_evidence,
         ))
 
         should_transcribe = (att_type == "audio") or (include_videos and att_type == "video")
@@ -222,6 +230,34 @@ def match_audios_and_catalog_media(
                 size_bytes=size_bytes or matched_path.stat().st_size,
             ))
 
+    # Retained unreferenced source assets belong in the corpus index, but are not
+    # invented WhatsApp messages (message_index=0, timestamp unknown).
+    for key, path in disk_index.items():
+        if key in referenced_names or not path.exists():
+            continue
+        att_type = classify_attachment(path.name)
+        if att_type not in ("document", "cad", "contact", "image"):
+            continue
+        info = None
+        if att_type == "contact":
+            try:
+                info = parse_vcf_file(path)
+            except (OSError, ValueError, UnicodeError):
+                pass
+        catalog_items.append(MediaCatalogItem(
+            message_index=0,
+            filename=path.name,
+            attachment_type=att_type,
+            timestamp="",
+            sender="",
+            extracted=True,
+            local_rel_path=f"media/{path.name}",
+            saved_filename=path.name,
+            retention_status="retained_original",
+            sha256=calculate_sha256(path),
+            size_bytes=path.stat().st_size,
+            contact_info=info,
+        ))
     return audio_matches, catalog_items
 
 

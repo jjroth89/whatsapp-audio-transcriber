@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whatsapp-audio-transcriber"
-version = "1.2.0"
+version = "1.3.0"
 description = "Automated high-fidelity audio transcription for WhatsApp chat exports with timeline-anchored inline embedding."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,6 +34,16 @@ cuda = [
   "nvidia-cublas-cu12",
   "nvidia-cudnn-cu12",
   "nvidia-cuda-nvrtc-cu12",
+]
+
+# Optional local-only document and photo OCR; base installs remain unchanged.
+# pypdf + pypdfium2 avoid PyMuPDF's AGPL/commercial licensing path.
+ocr = [
+  "pypdf>=5.0,<7.0",
+  "pypdfium2>=4.30,<6.0",
+  "rapidocr-onnxruntime>=1.4.0,<1.5.0",
+  "numpy>=1.24,<3.0",
+  "Pillow>=10.0,<13.0",
 ]
 
 [project.scripts]

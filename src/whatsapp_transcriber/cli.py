@@ -4,7 +4,7 @@ import sys
 import shutil
 import zipfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime, timezone
 from typing import Set, Tuple
 
@@ -22,6 +22,7 @@ from .backends.hermes_profile import HermesProfileTranscriber
 VIDEO_EXTENSIONS = {".mp4", ".3gp", ".mov", ".avi", ".mkv", ".webm"}
 AUDIO_EXTENSIONS = {".opus", ".ogg", ".m4a", ".mp3", ".wav", ".aac", ".flac"}
 STICKER_EXTENSIONS = {".webp"}
+OCR_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 DOCS_AND_IMAGE_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".odt", ".ods", ".rtf",
     ".dwg", ".dxf", ".rvt", ".ifc", ".skp", ".step", ".stp",
@@ -30,27 +31,85 @@ DOCS_AND_IMAGE_EXTENSIONS = {
 }
 
 
+def _choose_chat_name(filenames: list[str]) -> str:
+    """Pick a single WhatsApp export deterministically, never an arbitrary .txt attachment."""
+    names = sorted(filenames, key=lambda name: (name.casefold(), name))
+    preferred = [name for name in names if name.casefold() == "_chat.txt"]
+    if not preferred:
+        preferred = [name for name in names if name.casefold().startswith(
+            ("whatsapp chat with", "conversa do whatsapp com")
+        ) and Path(name).suffix.lower() in {".txt", ".md"}]
+    if not preferred:
+        preferred = [name for name in names if Path(name).suffix.lower() == ".txt"
+                     and name.casefold() not in {"requirements.txt", "vocab.txt", "license.txt"}]
+    if not preferred:
+        preferred = [name for name in names if Path(name).suffix.lower() == ".md"
+                     and name.casefold() not in {"readme.md", "skill.md", "agents.md"}]
+    if len(preferred) != 1:
+        raise ValueError(f"Expected exactly one WhatsApp chat export, found {len(preferred)} candidates")
+    return preferred[0]
+
+
 def detect_chat_file(directory: Path) -> Path:
-    """Find the main WhatsApp conversation text or markdown file."""
-    ios_chat = directory / "_chat.txt"
-    if ios_chat.is_file():
-        return ios_chat
+    names = [p.name for p in directory.iterdir() if p.is_file()]
+    return directory / _choose_chat_name(names)
 
-    txt_candidates = [
-        f for f in directory.glob("*.txt")
-        if f.name.lower() not in ["requirements.txt", "vocab.txt", "license.txt"]
-    ]
-    if txt_candidates:
-        return txt_candidates[0]
 
-    md_candidates = [
-        f for f in directory.glob("*.md")
-        if f.name.lower() not in ["readme.md", "skill.md", "agents.md"]
-    ]
-    if md_candidates:
-        return md_candidates[0]
+def _safe_basename(archive_name: str) -> str:
+    name = PurePosixPath(archive_name.replace("\\", "/")).name
+    if name in ("", ".", ".."):
+        raise ValueError(f"Unsafe archive member: {archive_name!r}")
+    return name
 
-    raise FileNotFoundError(f"No WhatsApp conversation file (.txt or .md) found in {directory}")
+
+def copy_folder_input(
+    source_dir: Path, output_dir: Path, media_dir: Path,
+    media_mode: str, transcribe_videos: bool, ocr: bool = False
+) -> Tuple[Path, Set[str]]:
+    """Copy selected assets to the output; never rename/delete the source files."""
+    if output_dir == source_dir or source_dir in output_dir.parents:
+        raise ValueError("Output directory must be outside the source directory")
+    source_files = sorted((p for p in source_dir.rglob("*") if p.is_file()),
+                          key=lambda path: path.as_posix().casefold())
+    chat_file = detect_chat_file(source_dir)
+    by_name = {}
+    for p in source_files:
+        if p == chat_file:
+            continue
+        key = p.name.casefold()
+        if key in by_name:
+            raise ValueError(f"Duplicate source basename: {p.name}")
+        by_name[key] = p
+    media_dir.mkdir(parents=True, exist_ok=True)
+    for key, p in by_name.items():
+        ext = p.suffix.lower()
+        needed = (ext in AUDIO_EXTENSIONS or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+                  or (ocr and ext in OCR_EXTENSIONS))
+        if needed or _should_retain_ext(ext, p.name, media_mode):
+            shutil.copy2(p, media_dir / p.name)
+    return chat_file, set(by_name)
+
+
+def create_agent_pack(output_dir: Path, zip_target: Path) -> Path:
+    """Allowlist canonical artifacts and retained media; never include the raw chat export."""
+    files = []
+    for name in ("enriched_chat.md", "enriched_chat.json", "audio_audit.json"):
+        path = output_dir / name
+        if not path.is_file():
+            raise FileNotFoundError(f"Required agent artifact not found: {path}")
+        files.append(path)
+    media = output_dir / "media"
+    if media.exists():
+        files.extend(p for p in media.rglob("*") if p.is_file())
+    with zipfile.ZipFile(zip_target, "w") as zf:
+        for path in sorted(files, key=lambda item: item.relative_to(output_dir).as_posix()):
+            arc = path.relative_to(output_dir).as_posix()
+            info = zipfile.ZipInfo(arc, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            with path.open("rb") as src, zf.open(info, "w") as dst:
+                shutil.copyfileobj(src, dst)
+    return zip_target
 
 
 def _should_retain_ext(ext: str, fname: str, media_mode: str) -> bool:
@@ -77,6 +136,7 @@ def selective_unpack(
     media_dir: Path,
     media_mode: str = "audio",
     transcribe_videos: bool = False,
+    ocr: bool = False,
 ) -> Tuple[Path, Set[str]]:
     """
     Extracts chat log, retained media per media_mode, and temporary A/V files
@@ -88,32 +148,34 @@ def selective_unpack(
     available_in_source: Set[str] = set()
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        for member in zf.infolist():
-            if member.is_dir():
+        members = [(member, _safe_basename(member.filename))
+                   for member in zf.infolist() if not member.is_dir()]
+        seen = set()
+        for _, name in members:
+            key = name.casefold()
+            if key in seen:
+                raise ValueError(f"Duplicate ZIP basename: {name}")
+            seen.add(key)
+        chat_name = _choose_chat_name([name for _, name in members])
+        for member, fname in members:
+            ext = Path(fname).suffix.lower()
+            if fname == chat_name:
+                target_path = dest_dir / fname
+                with zf.open(member) as src, target_path.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                chat_file_found = target_path
                 continue
 
-            fname = Path(member.filename).name
-            ext = Path(fname).suffix.lower()
-
-            if ext in [".txt", ".md"] and not chat_file_found:
-                if fname.lower().startswith(("_chat", "whatsapp chat with", "conversa do whatsapp com")) or ext == ".txt":
-                    target_path = dest_dir / fname
-                    with zf.open(member) as src, open(target_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    chat_file_found = target_path
-                    continue
-
-            available_in_source.add(fname.lower())
-
-            # Extract if retained by policy OR needed temporarily for transcription
-            needed_for_tx = (ext in AUDIO_EXTENSIONS) or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+            available_in_source.add(fname.casefold())
+            needed_for_tx = (ext in AUDIO_EXTENSIONS or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+                             or (ocr and ext in OCR_EXTENSIONS))
             if needed_for_tx or _should_retain_ext(ext, fname, media_mode):
                 target_path = media_dir / fname
-                with zf.open(member) as src, open(target_path, "wb") as dst:
+                with zf.open(member) as src, target_path.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
 
-    if not chat_file_found:
-        chat_file_found = detect_chat_file(dest_dir)
+    if chat_file_found is None:
+        raise FileNotFoundError("WhatsApp chat export not found")
 
     return chat_file_found, available_in_source
 
@@ -189,7 +251,8 @@ def main():
         action="store_true",
         help="Extract & transcribe audio tracks from video files (works even when video binaries are not retained).",
     )
-    media_grp.add_argument("--rezip", action="store_true", help="Bundle final output directory into <output>_agent_pack.zip.")
+    media_grp.add_argument("--rezip", action="store_true", help="Bundle enriched outputs and selected media into <output>_agent_pack.zip.")
+    media_grp.add_argument("--ocr", action="store_true", help="Extract PDF text and local JPEG/PNG OCR (requires the [ocr] extra).")
 
     engine_grp = parser.add_argument_group("Engine & Model")
     engine_grp.add_argument("-e", "--engine", choices=["auto", "local", "hermes"], default="auto", help="STT engine (default: auto).")
@@ -218,6 +281,8 @@ def main():
         sys.exit(1)
 
     output_dir = args.output.resolve() if args.output else input_path.parent / f"{input_path.stem}_transcribed"
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(f"Output directory must be empty to prevent stale pack contents: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     media_dir = output_dir / "media"
     media_mode = _resolve_media_mode(args)
@@ -235,15 +300,18 @@ def main():
             media_dir=media_dir,
             media_mode=media_mode,
             transcribe_videos=args.transcribe_videos,
+            ocr=args.ocr,
         )
     else:
-        chat_file = detect_chat_file(input_path)
-        media_dir = input_path
+        chat_file, available_in_source = copy_folder_input(
+            input_path, output_dir, media_dir, media_mode, args.transcribe_videos,
+            ocr=args.ocr,
+        )
 
     if not args.quiet:
         print(f"[PARSER] Reading conversation: {chat_file.name}")
     chat_text = chat_file.read_text(encoding="utf-8", errors="replace")
-    messages = parse_chat_log(chat_text)
+    messages = parse_chat_log(chat_text, known_filenames=available_in_source)
     if not args.quiet:
         print(f"[PARSER] Parsed {len(messages)} messages.")
 
@@ -267,7 +335,7 @@ def main():
             dict_path = candidate_vocab
 
     prompt_vocab = harvest_vocabulary_from_chat(messages, dictionary_file=dict_path)
-    transcriber = create_transcriber(args)
+    transcriber = create_transcriber(args) if audio_matches else None
 
     transcriptions = {}
     start_time = datetime.now(timezone.utc)
@@ -314,11 +382,29 @@ def main():
                 preview = result["text"][:75] + ("..." if len(result["text"]) > 75 else "")
                 print(f"       -> \"{preview}\" ({result.get('duration', 0.0)}s)")
 
+    # OCR works on temporary extracted attachments BEFORE retention policy omits originals.
+    if args.ocr:
+        from .ocr import create_ocr_engine, extract_media_text
+        target_items = [
+            item for item in catalog_items
+            if item.extracted and (Path(item.saved_filename or item.filename).suffix.lower() in OCR_EXTENSIONS)
+        ]
+        if target_items:
+            ocr_engine = create_ocr_engine()
+            ocr_cache = {}
+            for item in target_items:
+                file_path = media_dir / (item.saved_filename or item.filename)
+                # One physical file may be referenced by multiple messages.
+                key = str(file_path.resolve())
+                if key not in ocr_cache:
+                    ocr_cache[key] = extract_media_text(file_path, ocr_engine)
+                item.text_extraction = ocr_cache[key]
+
     duration_total = (datetime.now(timezone.utc) - start_time).total_seconds()
 
     # Apply media retention policy BEFORE generating outputs so manifests & links are 100% accurate
     purged_av = False
-    if is_zip_input:
+    if True:  # Both ZIP and folder sources use the private output/media copy.
         for cat in catalog_items:
             if not cat.extracted:
                 continue
@@ -326,16 +412,20 @@ def main():
             ext = Path(cat.filename).suffix.lower()
             should_keep = _should_retain_ext(ext, cat.filename, media_mode)
             if not should_keep:
-                was_transcribed = (cat.saved_filename in transcriptions) or (cat.filename in transcriptions)
+                result = transcriptions.get(cat.saved_filename or "") or transcriptions.get(cat.filename)
+                was_transcribed = bool(result and str(result.get("text", "")).strip()
+                                       and "no_audio_track" not in result.get("alerts", []))
                 if fpath.exists():
                     fpath.unlink()
                 cat.extracted = False
                 cat.local_rel_path = None
                 if was_transcribed:
-                    cat.retention_status = "transcribed_and_purged"
+                    cat.retention_status = "text_equivalent_verified"
                     purged_av = True
+                elif cat.attachment_type in ("audio", "video") and (cat.filename in transcriptions or (cat.saved_filename or "") in transcriptions):
+                    cat.retention_status = "processing_failed"
                 else:
-                    cat.retention_status = "cataloged_only_not_extracted"
+                    cat.retention_status = "not_packaged_by_choice"
 
         # Ensure no unreferenced temporary A/V files remain if excluded by media_mode
         if media_dir.exists() and media_mode != "none":
@@ -352,9 +442,10 @@ def main():
         "version": __version__,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "total_processing_seconds": round(duration_total, 2),
-        "engine": getattr(transcriber, "model_name", "whisper"),
+        "engine": getattr(transcriber, "model_name", "not_required"),
         "media_mode": media_mode,
         "transcribe_videos": args.transcribe_videos,
+        "ocr": args.ocr,
         "raw_av_purged_after_transcription": purged_av,
         "audios_count": sum(1 for m in audio_matches if m.media_kind == "audio"),
         "videos_transcribed_count": sum(1 for m in audio_matches if m.media_kind == "video"),
@@ -379,12 +470,7 @@ def main():
         zip_target = output_dir.parent / f"{output_dir.name}_agent_pack.zip"
         if not args.quiet:
             print(f"[REZIP] Packaging final deliverables into {zip_target.name}...")
-        with zipfile.ZipFile(zip_target, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, _, files in os.walk(output_dir):
-                for f in files:
-                    fpath = Path(root) / f
-                    arcname = fpath.relative_to(output_dir)
-                    zf.write(fpath, arcname=str(arcname))
+        create_agent_pack(output_dir, zip_target)
         if not args.quiet:
             print(f"[REZIP] Agent Pack created: {zip_target}")
 

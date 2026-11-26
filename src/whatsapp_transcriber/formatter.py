@@ -13,37 +13,95 @@ def _encode_rel_link(rel_path: str) -> str:
     return "/".join(quote(part) for part in rel_path.split("/"))
 
 
+def _verified_transcript(result: Optional[Dict[str, Any]]) -> bool:
+    if not result or not str(result.get("text", "")).strip():
+        return False
+    return not any(alert in result.get("alerts", [])
+                   for alert in ("no_audio_track", "inaudible_or_silent", "processing_failed"))
+
+
 def _build_retention_summary(
     catalog_items: List[MediaCatalogItem],
     messages: List[ChatMessage],
     execution_info: Dict[str, Any],
+    audio_matches: List[AudioAttachmentMatch],
+    transcriptions: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
-    retained = sum(1 for c in catalog_items if c.retention_status == "retained")
-    purged_after_tx = sum(1 for c in catalog_items if c.retention_status == "transcribed_and_purged")
-    cataloged_only = sum(1 for c in catalog_items if c.retention_status == "cataloged_only_not_extracted")
-    missing = sum(1 for c in catalog_items if c.retention_status == "missing_from_export")
-    omitted_in_export = sum(1 for m in messages if m.is_omitted_media)
+    categories = (
+        "retained_original", "text_equivalent_verified", "not_packaged_by_choice",
+        "source_reference_unavailable", "decorative_stickers_skipped", "processing_failed",
+    )
+    counts = {key: 0 for key in categories}
+    for item in catalog_items:
+        if item.retention_status in counts:
+            counts[item.retention_status] += 1
 
-    media_mode = execution_info.get("media_mode", "audio")
-    av_purged = bool(execution_info.get("raw_av_purged_after_transcription", False))
+    transcribed_messages = {
+        id(m.message) for m in audio_matches
+        if _verified_transcript(transcriptions.get(m.filename))
+    }
+    media_refs = [
+        m for m in messages
+        if m.attachment_type == "audio"
+        or (m.attachment_type == "video" and execution_info.get("transcribe_videos"))
+    ]
+    verified_count = sum(id(m) in transcribed_messages for m in media_refs)
+    unavailable = counts["source_reference_unavailable"]
+    omitted_in_source = sum(m.is_omitted_media for m in messages)
+    ocr_failures = sum(1 for item in catalog_items if item.text_extraction
+                       and item.text_extraction.get("status") == "failed")
+    complete = (verified_count == len(media_refs) and unavailable == 0
+                and omitted_in_source == 0 and ocr_failures == 0)
 
     return {
-        "media_mode": media_mode,
+        "schema_version": 2,
+        "media_mode": execution_info.get("media_mode", "audio"),
         "transcribe_videos": bool(execution_info.get("transcribe_videos", False)),
-        "raw_av_purged_after_transcription": av_purged,
-        "total_attachments_cataloged": len(catalog_items),
-        "retained_in_package": retained,
-        "transcribed_and_purged": purged_after_tx,
-        "cataloged_only_not_extracted": cataloged_only,
-        "missing_from_source_export": missing,
-        "omitted_media_in_source_export": omitted_in_export,
+        "evidence_categories": counts,
+        "complete_text_corpus": {
+            "scope": "supplied_whatsapp_export",
+            "status": "complete" if complete else "partial",
+            "chat_text_preserved": True,
+            "audio_references_total": len(media_refs),
+            "audio_text_equivalents_verified": verified_count,
+            "unavailable_source_references": unavailable,
+            "source_media_placeholders": omitted_in_source,
+            "ocr_processing_failures": ocr_failures,
+        },
         "agent_integrity_note": (
-            "All voice notes (and video audio tracks when enabled) were extracted from the source archive, "
-            "SHA-256 verified, and transcribed locally. Any audio/video files marked 'transcribed_and_purged' "
-            "were intentionally removed from media/ per retention policy after transcription succeeded; "
-            "their absence in media/ is expected and does NOT indicate missing or unverified content."
+            "The conversation text represents the supplied export. Available audio/video "
+            "text equivalents are individually verified where indicated. Retained PDF, "
+            "CAD and image originals are linked; their contents are only text-extracted "
+            "when an individual text_extraction result says so. The corpus status is partial "
+            "when an explicit source reference, placeholder or requested OCR process fails."
         ),
     }
+
+
+def _escape_cell(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ").replace("[", "\\[").replace("]", "\\]")
+
+
+def _build_corpus_index(catalog_items: List[MediaCatalogItem]) -> List[str]:
+    indexable = [
+        c for c in catalog_items
+        if c.attachment_type in ("document", "cad", "contact", "image")
+        and c.retention_status == "retained_original" and c.local_rel_path
+    ]
+    indexable.sort(key=lambda c: (c.timestamp or "9999", c.message_index, (c.saved_filename or c.filename).casefold()))
+    lines = ["## Document, Contact & Photo Index", "",
+             "| Timestamp | Category | Asset |", "|---|---|---|"]
+    labels = {"document": "Document", "cad": "CAD", "contact": "Contact", "image": "Photo"}
+    for item in indexable:
+        label = item.saved_filename or item.filename
+        url = _encode_rel_link(item.local_rel_path)
+        lines.append(f"| {_escape_cell(item.timestamp or 'Unreferenced')} "
+                     f"| {labels[item.attachment_type]} "
+                     f"| [{_escape_cell(label)}]({url}) |")
+    if not indexable:
+        lines.append("| — | — | No retained documents, contacts or photos |")
+    lines.extend(["", "---", ""])
+    return lines
 
 
 def generate_enriched_outputs(
@@ -62,27 +120,24 @@ def generate_enriched_outputs(
     catalog_items = catalog_items or []
     execution_info = execution_info or {}
 
-    match_map: Dict[str, AudioAttachmentMatch] = {m.filename.lower(): m for m in audio_matches}
+    match_map: Dict[int, AudioAttachmentMatch] = {id(m.message): m for m in audio_matches}
     catalog_by_idx: Dict[int, MediaCatalogItem] = {c.message_index: c for c in catalog_items}
     catalog_by_name: Dict[str, MediaCatalogItem] = {c.filename.lower(): c for c in catalog_items}
 
-    retention_summary = _build_retention_summary(catalog_items, messages, execution_info)
+    retention_summary = _build_retention_summary(catalog_items, messages, execution_info, audio_matches, transcriptions)
 
+    corpus = retention_summary["complete_text_corpus"]
     md_lines: List[str] = [
         f"# {chat_title} — Enriched Transcript",
         "",
-        "> **Media & Transcription Integrity Policy**",
-        f"> - **Media Retention Mode:** `{retention_summary['media_mode']}` | **Video Transcription:** `{retention_summary['transcribe_videos']}`",
-        f"> - **Cataloged Attachments:** `{retention_summary['total_attachments_cataloged']}` "
-        f"(Retained in `media/`: `{retention_summary['retained_in_package']}`, "
-        f"Transcribed & Purged: `{retention_summary['transcribed_and_purged']}`, "
-        f"Excluded by Policy: `{retention_summary['cataloged_only_not_extracted']}`, "
-        f"Omitted in WhatsApp Export: `{retention_summary['omitted_media_in_source_export']}`)",
-        f"> - **Agent Note:** {retention_summary['agent_integrity_note']}",
+        f"> **Complete Text Corpus** (`{corpus['status']}`, scope: supplied WhatsApp export)",
+        f"> - Chat messages: preserved | Audio text equivalents verified: "
+        f"{corpus['audio_text_equivalents_verified']}/{corpus['audio_references_total']}",
+        f"> - Source media placeholders: {corpus['source_media_placeholders']} | "
+        f"Unavailable explicit references: {corpus['unavailable_source_references']}",
+        f"> - **Ingestion contract:** {retention_summary['agent_integrity_note']}",
         "",
-        "---",
-        "",
-    ]
+    ] + _build_corpus_index(catalog_items)
 
     json_messages: List[Dict[str, Any]] = []
     audit_audios: List[Dict[str, Any]] = []
@@ -110,9 +165,7 @@ def generate_enriched_outputs(
         match: Optional[AudioAttachmentMatch] = None
         audio_item: Optional[Dict[str, Any]] = None
         if msg.attachment_filename:
-            match = match_map.get(msg.attachment_filename.lower())
-            if not match and cat_item and cat_item.saved_filename:
-                match = match_map.get(cat_item.saved_filename.lower())
+            match = match_map.get(id(msg))
             if match and match.filename in transcriptions:
                 audio_item = transcriptions[match.filename]
 
@@ -120,10 +173,11 @@ def generate_enriched_outputs(
             dur_str = f"{audio_item.get('duration', 0.0):.1f}s"
             transcript_text = audio_item.get("text", "").strip() or "[Inaudible or empty audio]"
             is_video = match.media_kind == "video"
-            is_purged = (cat_item is not None and cat_item.retention_status == "transcribed_and_purged")
+            is_text_only = (cat_item is not None and cat_item.retention_status == "text_equivalent_verified")
 
-            if is_purged or not (cat_item and cat_item.local_rel_path):
-                file_ref = f"`{match.filename}` *(SHA-256 verified, transcribed & purged per policy)*"
+            if is_text_only or not (cat_item and cat_item.local_rel_path):
+                qualifier = "text equivalent verified" if _verified_transcript(audio_item) else "text extraction unverified"
+                file_ref = f"`{match.filename}` *({qualifier}; original not included in pack)*"
             else:
                 encoded_link = _encode_rel_link(cat_item.local_rel_path)
                 file_ref = f"[`{match.filename}`]({encoded_link})"
@@ -157,7 +211,8 @@ def generate_enriched_outputs(
                 "is_forwarded_or_shared": match.is_forwarded_or_shared,
                 "origin_date": match.origin_date,
                 "provenance": match.provenance_note,
-                "retention_status": cat_item.retention_status if cat_item else "retained",
+                "retention_status": cat_item.retention_status if cat_item else "retained_original",
+                "text_equivalent_verified": _verified_transcript(audio_item),
                 "language": audio_item.get("language", "pt"),
                 "confidence": audio_item.get("confidence", 1.0),
                 "alerts": audio_item.get("alerts", []),
@@ -191,13 +246,15 @@ def generate_enriched_outputs(
             saved_name = cat_item.saved_filename or cat_item.filename
             renamed_note = f" *(original: `{cat_item.filename}`)*" if saved_name != cat_item.filename else ""
 
-            if cat_item.retention_status == "retained" and cat_item.local_rel_path:
+            if cat_item.retention_status == "retained_original" and cat_item.local_rel_path:
                 encoded_link = _encode_rel_link(cat_item.local_rel_path)
                 file_ref = f"[`{saved_name}`]({encoded_link}){renamed_note}"
-            elif cat_item.retention_status == "cataloged_only_not_extracted":
-                file_ref = f"`{cat_item.filename}` *(cataloged only; excluded from `media/` by policy)*"
+            elif cat_item.retention_status == "not_packaged_by_choice":
+                file_ref = f"`{cat_item.filename}` *(original not included by packaging choice)*"
+            elif cat_item.retention_status == "source_reference_unavailable":
+                file_ref = f"`{cat_item.filename}` *(referenced but not supplied in source)*"
             else:
-                file_ref = f"`{cat_item.filename}` *(missing from source export)*"
+                file_ref = f"`{cat_item.filename}` *(processing not verified)*"
 
             if att_type == "contact" and cat_item.contact_info:
                 contact_summary = format_vcf_summary(cat_item.contact_info)
@@ -216,6 +273,21 @@ def generate_enriched_outputs(
             md_lines.append(f"**[{msg.date_iso} {msg.time_str}] {msg.sender}:** {semantic_tag}{edited_badge}")
             if clean_caption:
                 md_lines.append(f"> Caption: {clean_caption}")
+            extraction = cat_item.text_extraction
+            if extraction:
+                status = extraction.get("status")
+                if status == "extracted":
+                    full_text = str(extraction.get("text", "")).strip()
+                    excerpt = " ".join(full_text.split())
+                    truncated = len(excerpt) > 800 or extraction.get("truncated", False)
+                    excerpt = excerpt[:800] if len(excerpt) > 800 else excerpt
+                    excerpt = excerpt.replace(">", "\\>").replace('"', "\\\"")
+                    suffix = "… (full extraction in enriched_chat.json)" if truncated else ""
+                    md_lines.append(f'> [OCR]: "{excerpt}"{suffix}')
+                elif status == "no_text_detected":
+                    md_lines.append("> [OCR]: no text detected in this asset")
+                elif status == "failed":
+                    md_lines.append("> [OCR]: processing failed; text extraction is unverified")
             md_lines.append("")
 
             json_entry: Dict[str, Any] = {
@@ -234,6 +306,8 @@ def generate_enriched_outputs(
                     "type": att_type,
                     "extracted": cat_item.extracted,
                     "retention_status": cat_item.retention_status,
+                    "evidence": cat_item.attachment_evidence,
+                    "text_extraction": cat_item.text_extraction or {"status": "not_requested"},
                     "sha256": cat_item.sha256,
                     "size_bytes": cat_item.size_bytes,
                     "local_rel_path": cat_item.local_rel_path,
@@ -244,7 +318,7 @@ def generate_enriched_outputs(
             json_messages.append(json_entry)
 
         elif msg.is_omitted_media:
-            md_lines.append(f"**[{msg.date_iso} {msg.time_str}] {msg.sender}:** [OMITTED MEDIA IN SOURCE EXPORT] `{msg.content}`{edited_badge}")
+            md_lines.append(f"**[{msg.date_iso} {msg.time_str}] {msg.sender}:** [SOURCE MEDIA PLACEHOLDER] `{msg.content}`{edited_badge}")
             json_messages.append({
                 "index": idx,
                 "timestamp": f"{msg.date_iso} {msg.time_str}",
@@ -300,6 +374,8 @@ def generate_enriched_outputs(
             "sender": c.sender,
             "extracted": c.extracted,
             "retention_status": c.retention_status,
+            "evidence": c.attachment_evidence,
+            "text_extraction": c.text_extraction or {"status": "not_requested"},
             "sha256": c.sha256,
             "size_bytes": c.size_bytes,
             "local_rel_path": c.local_rel_path,
