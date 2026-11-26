@@ -50,8 +50,26 @@ def _build_retention_summary(
     omitted_in_source = sum(m.is_omitted_media for m in messages)
     ocr_failures = sum(1 for item in catalog_items if item.text_extraction
                        and item.text_extraction.get("status") == "failed")
-    complete = (verified_count == len(media_refs) and unavailable == 0
-                and omitted_in_source == 0 and ocr_failures == 0)
+    pipeline_complete = (verified_count == len(media_refs) and unavailable == 0 and ocr_failures == 0)
+    complete = pipeline_complete and (omitted_in_source == 0)
+
+    partial_reasons: List[str] = []
+    if omitted_in_source > 0:
+        partial_reasons.append(
+            f"{omitted_in_source} <Media omitted> placeholder(s) were already omitted by WhatsApp in the source export"
+        )
+    if verified_count < len(media_refs):
+        partial_reasons.append(
+            f"{len(media_refs) - verified_count} audio/video item(s) were silent/inaudible or unverified"
+        )
+    if unavailable > 0:
+        partial_reasons.append(
+            f"{unavailable} explicit attachment reference(s) were not present in the source archive"
+        )
+    if ocr_failures > 0:
+        partial_reasons.append(
+            f"{ocr_failures} OCR extraction(s) failed"
+        )
 
     return {
         "schema_version": 2,
@@ -61,6 +79,8 @@ def _build_retention_summary(
         "complete_text_corpus": {
             "scope": "supplied_whatsapp_export",
             "status": "complete" if complete else "partial",
+            "pipeline_processing_status": "complete" if pipeline_complete else "partial",
+            "partial_reasons": partial_reasons,
             "chat_text_preserved": True,
             "audio_references_total": len(media_refs),
             "audio_text_equivalents_verified": verified_count,
@@ -72,8 +92,10 @@ def _build_retention_summary(
             "The conversation text represents the supplied export. Available audio/video "
             "text equivalents are individually verified where indicated. Retained PDF, "
             "CAD and image originals are linked; their contents are only text-extracted "
-            "when an individual text_extraction result says so. The corpus status is partial "
-            "when an explicit source reference, placeholder or requested OCR process fails."
+            "when an individual text_extraction result says so. If status is 'partial' while "
+            "pipeline_processing_status is 'complete', all supplied files were processed and "
+            "'partial' solely reflects WhatsApp <Media omitted> placeholders absent from the "
+            "original export (see partial_reasons)."
         ),
     }
 
@@ -127,14 +149,17 @@ def generate_enriched_outputs(
     retention_summary = _build_retention_summary(catalog_items, messages, execution_info, audio_matches, transcriptions)
 
     corpus = retention_summary["complete_text_corpus"]
+    reasons_note = f" — {'; '.join(corpus['partial_reasons'])}" if corpus.get("partial_reasons") else ""
     md_lines: List[str] = [
         f"# {chat_title} — Enriched Transcript",
         "",
-        f"> **Complete Text Corpus** (`{corpus['status']}`, scope: supplied WhatsApp export)",
-        f"> - Chat messages: preserved | Audio text equivalents verified: "
+        f"> **Complete Text Corpus:** `{corpus['status']}` "
+        f"(Pipeline Processing: `{corpus['pipeline_processing_status']}`{reasons_note})",
+        f"> - Chat messages: preserved | Audio/Video text equivalents verified: "
         f"{corpus['audio_text_equivalents_verified']}/{corpus['audio_references_total']}",
-        f"> - Source media placeholders: {corpus['source_media_placeholders']} | "
-        f"Unavailable explicit references: {corpus['unavailable_source_references']}",
+        f"> - WhatsApp `<Media omitted>` placeholders in source: {corpus['source_media_placeholders']} | "
+        f"Unavailable explicit references: {corpus['unavailable_source_references']} | "
+        f"OCR failures: {corpus['ocr_processing_failures']}",
         f"> - **Ingestion contract:** {retention_summary['agent_integrity_note']}",
         "",
     ] + _build_corpus_index(catalog_items)
