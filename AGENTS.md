@@ -95,3 +95,9 @@ Hermes agents can parse `enriched_chat.json` directly. Each message contains:
 Read `enriched_chat.json.package_policy.complete_text_corpus` before making completeness claims. `complete` refers only to the supplied export and verified text equivalents, **not** to unread PDF/image contents. `partial` identifies real unverified audio or source references; report those precisely. Ignore no unresolved evidence, but do not invent missing media from plain-text filenames.
 
 Use `enriched_chat.md` as the primary chronological narrative and its top Document, Contact & Photo Index for retained original documents, photos, CAD and contacts. Use `audio_audit.json` to inspect SHA-256 and provenance, with `enriched_chat.json` as the structured counterpart. The original chat export is deliberately absent from the agent ZIP; legitimate text attachments inside `media/` remain.
+
+## v1.3.0 — Optional Local Document OCR
+
+When the user needs **text from PDFs, scanned pages or photos**, install `.[ocr]` and pass `--ocr`; do not imply that the default non-OCR run read image/PDF content. Native PDF text is extracted with pypdf, blank PDF pages rendered with pypdfium2 and passed to local rapidocr-onnxruntime 1.4.x, and JPEG/PNG images use the same local OCR engine. No cloud text/OCR service and no Tesseract executable.
+
+Check `attachment.text_extraction.status` for `not_requested`, `extracted`, `no_text_detected`, or `failed`. The full text and per-page methods live in JSON, with a concise `> [OCR]: ...` entry in Markdown. A partial corpus or failed OCR must not be claimed complete. CAD files are preserved/linked but not parsed by this OCR module.
