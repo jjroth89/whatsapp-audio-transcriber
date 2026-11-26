@@ -22,6 +22,7 @@ from .backends.hermes_profile import HermesProfileTranscriber
 VIDEO_EXTENSIONS = {".mp4", ".3gp", ".mov", ".avi", ".mkv", ".webm"}
 AUDIO_EXTENSIONS = {".opus", ".ogg", ".m4a", ".mp3", ".wav", ".aac", ".flac"}
 STICKER_EXTENSIONS = {".webp"}
+OCR_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 DOCS_AND_IMAGE_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".odt", ".ods", ".rtf",
     ".dwg", ".dxf", ".rvt", ".ifc", ".skp", ".step", ".stp",
@@ -63,7 +64,7 @@ def _safe_basename(archive_name: str) -> str:
 
 def copy_folder_input(
     source_dir: Path, output_dir: Path, media_dir: Path,
-    media_mode: str, transcribe_videos: bool
+    media_mode: str, transcribe_videos: bool, ocr: bool = False
 ) -> Tuple[Path, Set[str]]:
     """Copy selected assets to the output; never rename/delete the source files."""
     if output_dir == source_dir or source_dir in output_dir.parents:
@@ -82,7 +83,8 @@ def copy_folder_input(
     media_dir.mkdir(parents=True, exist_ok=True)
     for key, p in by_name.items():
         ext = p.suffix.lower()
-        needed = ext in AUDIO_EXTENSIONS or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+        needed = (ext in AUDIO_EXTENSIONS or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+                  or (ocr and ext in OCR_EXTENSIONS))
         if needed or _should_retain_ext(ext, p.name, media_mode):
             shutil.copy2(p, media_dir / p.name)
     return chat_file, set(by_name)
@@ -134,6 +136,7 @@ def selective_unpack(
     media_dir: Path,
     media_mode: str = "audio",
     transcribe_videos: bool = False,
+    ocr: bool = False,
 ) -> Tuple[Path, Set[str]]:
     """
     Extracts chat log, retained media per media_mode, and temporary A/V files
@@ -164,7 +167,8 @@ def selective_unpack(
                 continue
 
             available_in_source.add(fname.casefold())
-            needed_for_tx = ext in AUDIO_EXTENSIONS or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+            needed_for_tx = (ext in AUDIO_EXTENSIONS or (transcribe_videos and ext in VIDEO_EXTENSIONS)
+                             or (ocr and ext in OCR_EXTENSIONS))
             if needed_for_tx or _should_retain_ext(ext, fname, media_mode):
                 target_path = media_dir / fname
                 with zf.open(member) as src, target_path.open("wb") as dst:
@@ -247,7 +251,8 @@ def main():
         action="store_true",
         help="Extract & transcribe audio tracks from video files (works even when video binaries are not retained).",
     )
-    media_grp.add_argument("--rezip", action="store_true", help="Bundle final output directory into <output>_agent_pack.zip.")
+    media_grp.add_argument("--rezip", action="store_true", help="Bundle enriched outputs and selected media into <output>_agent_pack.zip.")
+    media_grp.add_argument("--ocr", action="store_true", help="Extract PDF text and local JPEG/PNG OCR (requires the [ocr] extra).")
 
     engine_grp = parser.add_argument_group("Engine & Model")
     engine_grp.add_argument("-e", "--engine", choices=["auto", "local", "hermes"], default="auto", help="STT engine (default: auto).")
@@ -295,10 +300,12 @@ def main():
             media_dir=media_dir,
             media_mode=media_mode,
             transcribe_videos=args.transcribe_videos,
+            ocr=args.ocr,
         )
     else:
         chat_file, available_in_source = copy_folder_input(
-            input_path, output_dir, media_dir, media_mode, args.transcribe_videos
+            input_path, output_dir, media_dir, media_mode, args.transcribe_videos,
+            ocr=args.ocr,
         )
 
     if not args.quiet:
@@ -375,6 +382,24 @@ def main():
                 preview = result["text"][:75] + ("..." if len(result["text"]) > 75 else "")
                 print(f"       -> \"{preview}\" ({result.get('duration', 0.0)}s)")
 
+    # OCR works on temporary extracted attachments BEFORE retention policy omits originals.
+    if args.ocr:
+        from .ocr import create_ocr_engine, extract_media_text
+        target_items = [
+            item for item in catalog_items
+            if item.extracted and (Path(item.saved_filename or item.filename).suffix.lower() in OCR_EXTENSIONS)
+        ]
+        if target_items:
+            ocr_engine = create_ocr_engine()
+            ocr_cache = {}
+            for item in target_items:
+                file_path = media_dir / (item.saved_filename or item.filename)
+                # One physical file may be referenced by multiple messages.
+                key = str(file_path.resolve())
+                if key not in ocr_cache:
+                    ocr_cache[key] = extract_media_text(file_path, ocr_engine)
+                item.text_extraction = ocr_cache[key]
+
     duration_total = (datetime.now(timezone.utc) - start_time).total_seconds()
 
     # Apply media retention policy BEFORE generating outputs so manifests & links are 100% accurate
@@ -420,6 +445,7 @@ def main():
         "engine": getattr(transcriber, "model_name", "not_required"),
         "media_mode": media_mode,
         "transcribe_videos": args.transcribe_videos,
+        "ocr": args.ocr,
         "raw_av_purged_after_transcription": purged_av,
         "audios_count": sum(1 for m in audio_matches if m.media_kind == "audio"),
         "videos_transcribed_count": sum(1 for m in audio_matches if m.media_kind == "video"),
