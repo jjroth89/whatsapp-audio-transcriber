@@ -14,6 +14,7 @@ class ChatMessage:
     content: str
     is_system: bool = False
     attachment_filename: Optional[str] = None
+    attachment_evidence: Optional[str] = None  # explicit_marker | source_filename_match
     attachment_type: Optional[str] = None  # "audio", "image", "video", "document", "cad", "contact", "archive", "sticker", "attachment"
     is_forwarded: bool = False
     is_edited: bool = False
@@ -42,19 +43,15 @@ KNOWN_EXTENSIONS = (
     "vcf|zip|rar|7z"
 )
 
-# Explicit WhatsApp attachment wrappers (preserves spaces, accents, and special chars)
+# A filename-like token in ordinary text is NOT evidence of an attachment.
+# Match an explicit WhatsApp marker, or a basename confirmed by the source inventory.
 ANDROID_ATTACH_REGEX = re.compile(
-    r"^(.+?\.[A-Za-z0-9]{2,6})\s*\((?:file attached|arquivo anexado|ficheiro anexado)\)",
+    r"(?m)^\s*(?P<name>[^\r\n<>]+?\.[A-Za-z0-9]{2,6})"
+    r"\s*\((?:file attached|arquivo anexado|ficheiro anexado)\)(?=\s|$)",
     re.IGNORECASE,
 )
 IOS_ATTACH_REGEX = re.compile(
-    r"<(?:attached|anexado):\s*(.+?\.[A-Za-z0-9]{2,6})>",
-    re.IGNORECASE,
-)
-
-# Fallback for plain/unwrapped attachment mentions
-ATTACHMENT_REGEX = re.compile(
-    rf"[\w\.\-\(\)\u00C0-\u017F]+\.(?:{KNOWN_EXTENSIONS})\b",
+    r"<(?:attached|anexado):\s*(?P<name>[^<>\r\n]+?\.[A-Za-z0-9]{2,6})\s*>",
     re.IGNORECASE,
 )
 
@@ -91,19 +88,33 @@ EDITED_INDICATORS = [
     "esta mensagem foi editada",
 ]
 
-def extract_attachment_filename(text: str) -> Optional[str]:
-    """Extract attachment filename, preserving spaces/accents inside WhatsApp attachment markers."""
+def resolve_attachment(
+    text: str, known_filenames: Optional[set[str]] = None
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (basename, evidence), without treating ordinary filename mentions as missing attachments."""
     clean = text.strip().strip("\u200e\u200f\ufeff")
-    m = ANDROID_ATTACH_REGEX.search(clean)
-    if m:
-        return m.group(1).strip().strip("\u200e\u200f\ufeff")
-    m = IOS_ATTACH_REGEX.search(clean)
-    if m:
-        return m.group(1).strip().strip("\u200e\u200f\ufeff")
-    m = ATTACHMENT_REGEX.search(clean)
-    if m:
-        return m.group(0).strip()
-    return None
+    for pattern in (ANDROID_ATTACH_REGEX, IOS_ATTACH_REGEX):
+        match = pattern.search(clean)
+        if match:
+            name = match.group("name").strip().strip("\u200e\u200f\ufeff")
+            if "/" not in name and "\\" not in name:
+                return name, "explicit_marker"
+
+    if known_filenames:
+        for name in sorted(known_filenames, key=lambda value: (-len(value), value.casefold())):
+            if "/" in name or "\\" in name:
+                continue
+            if re.search(rf"(?<![\w./\\]){re.escape(name)}(?![\w.])", clean, re.IGNORECASE):
+                return name, "source_filename_match"
+    return None, None
+
+
+def extract_attachment_filename(
+    text: str, known_filenames: Optional[set[str]] = None
+) -> Optional[str]:
+    """Backward-compatible filename accessor; no unverified regex fallback."""
+    return resolve_attachment(text, known_filenames)[0]
+
 
 def classify_attachment(filename: str) -> str:
     """Classifies attachment filename into a semantic category."""
@@ -154,7 +165,7 @@ def _parse_date(date_str: str) -> str:
         return f"{year}-{int(p2):02d}-{int(p1):02d}"
     return date_str
 
-def parse_chat_log(text: str) -> List[ChatMessage]:
+def parse_chat_log(text: str, known_filenames: Optional[set[str]] = None) -> List[ChatMessage]:
     """Parse WhatsApp conversation log into a structured list of ChatMessages."""
     lines = text.splitlines()
     messages: List[ChatMessage] = []
@@ -183,7 +194,7 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
             is_omitted = any(om in content_lower for om in OMITTED_MEDIA_INDICATORS)
             is_edited = any(ed in content_lower for ed in EDITED_INDICATORS)
 
-            attachment_file = extract_attachment_filename(content)
+            attachment_file, attachment_evidence = resolve_attachment(content, known_filenames)
             attachment_type = classify_attachment(attachment_file) if attachment_file else None
 
             current_msg = ChatMessage(
@@ -195,6 +206,7 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
                 content=content,
                 is_system=is_system,
                 attachment_filename=attachment_file,
+                attachment_evidence=attachment_evidence,
                 attachment_type=attachment_type,
                 is_forwarded=is_fwd,
                 is_edited=is_edited,
@@ -206,9 +218,10 @@ def parse_chat_log(text: str) -> List[ChatMessage]:
                 current_msg.content += "\n" + line
                 line_lower = line.lower()
                 if not current_msg.attachment_filename:
-                    att_file = extract_attachment_filename(line)
+                    att_file, evidence = resolve_attachment(line, known_filenames)
                     if att_file:
                         current_msg.attachment_filename = att_file
+                        current_msg.attachment_evidence = evidence
                         current_msg.attachment_type = classify_attachment(att_file)
                 if not current_msg.is_forwarded:
                     if any(fwd in line_lower for fwd in FORWARDED_INDICATORS):
