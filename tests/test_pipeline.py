@@ -221,7 +221,7 @@ END:VCARD
             opus.unlink()
             catalog[1].extracted = False
             catalog[1].local_rel_path = None
-            catalog[1].retention_status = "transcribed_and_purged"
+            catalog[1].retention_status = "text_equivalent_verified"
 
             transcriptions = {
                 "PTT-20240115-WA0001.opus": {
