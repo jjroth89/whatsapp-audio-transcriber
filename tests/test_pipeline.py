@@ -2,17 +2,20 @@ import unittest
 import tempfile
 import json
 import sys
+import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 # Ensure src is in python path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from whatsapp_transcriber.parser import parse_chat_log, ChatMessage
+from whatsapp_transcriber.parser import parse_chat_log, ChatMessage, resolve_attachment
 from whatsapp_transcriber.matcher import match_audios_in_chat, match_audios_and_catalog_media
 from whatsapp_transcriber.vocab import harvest_vocabulary_from_chat
 from whatsapp_transcriber.formatter import generate_enriched_outputs
 from whatsapp_transcriber.vcf import parse_vcf_file
 from whatsapp_transcriber.video import extract_audio_from_video
+from whatsapp_transcriber.cli import create_agent_pack, copy_folder_input, selective_unpack, main
 
 class TestWhatsAppAudioTranscriber(unittest.TestCase):
 
@@ -243,13 +246,148 @@ END:VCARD
 
             md_text = paths["markdown"].read_text(encoding="utf-8")
             self.assertIn("media/2024-01-15_1005_Planta%20Baixa.dwg", md_text)
-            self.assertIn("SHA-256 verified, transcribed & purged per policy", md_text)
+            self.assertIn("text equivalent verified; original not included in pack", md_text)
             self.assertNotIn("(media/PTT-20240115-WA0001.opus)", md_text)
 
             json_data = json.loads(paths["json"].read_text(encoding="utf-8"))
-            self.assertTrue(json_data["package_policy"]["raw_av_purged_after_transcription"])
-            self.assertEqual(json_data["package_policy"]["transcribed_and_purged"], 1)
-            self.assertEqual(json_data["package_policy"]["retained_in_package"], 1)
+            self.assertEqual(json_data["package_policy"]["schema_version"], 2)
+            self.assertEqual(json_data["package_policy"]["complete_text_corpus"]["status"], "complete")
+            self.assertEqual(json_data["package_policy"]["evidence_categories"]["text_equivalent_verified"], 1)
+            self.assertEqual(json_data["package_policy"]["evidence_categories"]["retained_original"], 1)
+
+
+    def test_plain_filename_mentions_require_evidence(self):
+        chat = """15/01/2024 10:00 - Alice: Send contract.docx tomorrow.
+15/01/2024 10:01 - Bob: The extension is .pdf.
+15/01/2024 10:02 - Charlie: Proposal.pdf (file attached)
+15/01/2024 10:03 - Alice: Notes.txt
+"""
+        messages = parse_chat_log(chat)
+        self.assertEqual([m.attachment_filename for m in messages], [
+            None, None, "Proposal.pdf", None
+        ])
+        self.assertEqual(messages[2].attachment_evidence, "explicit_marker")
+        with tempfile.TemporaryDirectory() as tmp:
+            matches, catalog = match_audios_and_catalog_media(messages, Path(tmp))
+            self.assertFalse(matches)
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(catalog[0].retention_status, "source_reference_unavailable")
+
+    def test_exact_source_filename_matching_and_multiline_marker(self):
+        chat = """15/01/2024 10:00 - Alice: Bob, please inspect plan v2.pdf later.
+15/01/2024 10:01 - Bob: See attached note:
+Orçamento Final.pdf (arquivo anexado)
+"""
+        messages = parse_chat_log(chat, known_filenames={"plan v2.pdf"})
+        self.assertEqual(messages[0].attachment_filename, "plan v2.pdf")
+        self.assertEqual(messages[0].attachment_evidence, "source_filename_match")
+        self.assertEqual(messages[1].attachment_filename, "Orçamento Final.pdf")
+        self.assertEqual(messages[1].attachment_evidence, "explicit_marker")
+
+    def test_source_duplicate_zip_basename_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "synthetic.zip"
+            with zipfile.ZipFile(source, "w") as zf:
+                zf.writestr("_chat.txt", "15/01/2024 10:00 - Alice: Hello")
+                zf.writestr("first/Proposal.pdf", b"pdf-a")
+                zf.writestr("second/proposal.pdf", b"pdf-b")
+            with self.assertRaisesRegex(ValueError, "Duplicate ZIP basename"):
+                selective_unpack(source, work / "out", work / "out/media")
+
+    def test_agent_pack_allows_media_txt_but_not_raw_chat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            out = work / "out"
+            (out / "media").mkdir(parents=True)
+            for name in ("enriched_chat.md", "enriched_chat.json", "audio_audit.json"):
+                (out / name).write_text("synthetic", encoding="utf-8")
+            (out / "_chat.txt").write_text("raw private chat placeholder", encoding="utf-8")
+            (out / "media/Notes.txt").write_text("synthetic notes", encoding="utf-8")
+            archive = create_agent_pack(out, work / "pack.zip")
+            with zipfile.ZipFile(archive) as zf:
+                self.assertEqual(zf.namelist(), [
+                    "audio_audit.json", "enriched_chat.json", "enriched_chat.md", "media/Notes.txt"
+                ])
+                self.assertEqual(zf.read("media/Notes.txt"), b"synthetic notes")
+                self.assertNotIn("_chat.txt", zf.namelist())
+
+    def test_folder_source_is_unchanged_and_media_copy_is_packaged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "input"
+            out = work / "output"
+            source.mkdir()
+            out.mkdir()
+            (source / "_chat.txt").write_text(
+                "15/01/2024 10:00 - Alice: Proposal.pdf (file attached)", encoding="utf-8"
+            )
+            (source / "Proposal.pdf").write_bytes(b"synthetic-pdf")
+            chat, known = copy_folder_input(source, out, out / "media", "docs", False)
+            self.assertEqual(chat, source / "_chat.txt")
+            self.assertEqual(known, {"proposal.pdf"})
+            self.assertEqual((out / "media/Proposal.pdf").read_bytes(), b"synthetic-pdf")
+            self.assertEqual((source / "Proposal.pdf").read_bytes(), b"synthetic-pdf")
+            with self.assertRaisesRegex(ValueError, "outside the source"):
+                copy_folder_input(source, source / "output", source / "output/media", "all", False)
+
+    def test_complete_corpus_is_truthful_and_document_index_links_resolve(self):
+        chat = """15/01/2024 09:10 - Alice: Plan (Rev 2).dwg (file attached)
+15/01/2024 09:15 - Bob: Proposal.pdf (file attached)
+15/01/2024 09:20 - Charlie: PTT-20240115-WA0001.opus (file attached)
+"""
+        messages = parse_chat_log(chat)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            media = out / "media"
+            media.mkdir()
+            (media / "Proposal.pdf").write_bytes(b"synthetic")
+            (media / "Plan (Rev 2).dwg").write_bytes(b"synthetic")
+            _, catalog = match_audios_and_catalog_media(messages, media, rename_on_disk=False)
+            paths = generate_enriched_outputs(
+                messages, {}, [], catalog, out, chat_title="Synthetic"
+            )
+            payload = json.loads(paths["json"].read_text(encoding="utf-8"))
+            self.assertEqual(payload["package_policy"]["complete_text_corpus"]["status"], "partial")
+            self.assertEqual(payload["package_policy"]["complete_text_corpus"]["audio_references_total"], 1)
+            md = paths["markdown"].read_text(encoding="utf-8")
+            self.assertIn("Document, Contact & Photo Index", md)
+            self.assertIn("media/Plan%20%28Rev%202%29.dwg", md)
+            self.assertIn("media/Proposal.pdf", md)
+
+    def test_text_only_zip_cli_does_not_initialize_stt_and_excludes_raw(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "synthetic.zip"
+            with zipfile.ZipFile(source, "w") as zf:
+                zf.writestr("_chat.txt", "15/01/2024 10:00 - Alice: Hello Bob")
+                zf.writestr("Notes.txt", b"synthetic notes")
+            with patch.object(sys, "argv", ["whatsapp-transcribe", str(source),
+                                           "--media", "docs", "--rezip", "--quiet"]):
+                with patch("whatsapp_transcriber.cli.create_transcriber",
+                           side_effect=AssertionError("STT must not start")):
+                    main()
+            output = work / "synthetic_transcribed"
+            archive = work / "synthetic_transcribed_agent_pack.zip"
+            with zipfile.ZipFile(archive) as zf:
+                names = zf.namelist()
+                self.assertIn("enriched_chat.md", names)
+                self.assertIn("media/Notes.txt", names)
+                self.assertNotIn("_chat.txt", names)
+            self.assertTrue((output / "_chat.txt").exists())
+
+    def test_nonempty_output_dir_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "_chat.txt"
+            source.write_text("15/01/2024 10:00 - Alice: Hi")
+            out = work / "output"
+            out.mkdir()
+            (out / "stale.json").write_text("{}")
+            with patch.object(sys, "argv", ["whatsapp-transcribe", str(work),
+                                           "--output", str(out), "--quiet"]):
+                with self.assertRaises(FileExistsError):
+                    main()
 
     def test_video_audio_extraction(self):
         import av
