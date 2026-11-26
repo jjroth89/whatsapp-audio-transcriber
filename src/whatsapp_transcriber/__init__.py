@@ -3,4 +3,4 @@ WhatsApp Audio Transcriber
 A forensic and agentic tool to transcribe WhatsApp chat voice notes and in-line them chronologically.
 """
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
