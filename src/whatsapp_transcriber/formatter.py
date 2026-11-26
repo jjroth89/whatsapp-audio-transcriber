@@ -48,8 +48,10 @@ def _build_retention_summary(
     verified_count = sum(id(m) in transcribed_messages for m in media_refs)
     unavailable = counts["source_reference_unavailable"]
     omitted_in_source = sum(m.is_omitted_media for m in messages)
+    ocr_failures = sum(1 for item in catalog_items if item.text_extraction
+                       and item.text_extraction.get("status") == "failed")
     complete = (verified_count == len(media_refs) and unavailable == 0
-                and omitted_in_source == 0)
+                and omitted_in_source == 0 and ocr_failures == 0)
 
     return {
         "schema_version": 2,
@@ -64,13 +66,14 @@ def _build_retention_summary(
             "audio_text_equivalents_verified": verified_count,
             "unavailable_source_references": unavailable,
             "source_media_placeholders": omitted_in_source,
+            "ocr_processing_failures": ocr_failures,
         },
         "agent_integrity_note": (
             "The conversation text represents the supplied export. Available audio/video "
             "text equivalents are individually verified where indicated. Retained PDF, "
-            "CAD and image originals are linked but their contents have not been read. "
-            "The corpus status is partial when an explicitly referenced asset or a "
-            "source media placeholder cannot be verified."
+            "CAD and image originals are linked; their contents are only text-extracted "
+            "when an individual text_extraction result says so. The corpus status is partial "
+            "when an explicit source reference, placeholder or requested OCR process fails."
         ),
     }
 
@@ -270,6 +273,21 @@ def generate_enriched_outputs(
             md_lines.append(f"**[{msg.date_iso} {msg.time_str}] {msg.sender}:** {semantic_tag}{edited_badge}")
             if clean_caption:
                 md_lines.append(f"> Caption: {clean_caption}")
+            extraction = cat_item.text_extraction
+            if extraction:
+                status = extraction.get("status")
+                if status == "extracted":
+                    full_text = str(extraction.get("text", "")).strip()
+                    excerpt = " ".join(full_text.split())
+                    truncated = len(excerpt) > 800 or extraction.get("truncated", False)
+                    excerpt = excerpt[:800] if len(excerpt) > 800 else excerpt
+                    excerpt = excerpt.replace(">", "\\>").replace('"', "\\\"")
+                    suffix = "… (full extraction in enriched_chat.json)" if truncated else ""
+                    md_lines.append(f'> [OCR]: "{excerpt}"{suffix}')
+                elif status == "no_text_detected":
+                    md_lines.append("> [OCR]: no text detected in this asset")
+                elif status == "failed":
+                    md_lines.append("> [OCR]: processing failed; text extraction is unverified")
             md_lines.append("")
 
             json_entry: Dict[str, Any] = {
@@ -289,6 +307,7 @@ def generate_enriched_outputs(
                     "extracted": cat_item.extracted,
                     "retention_status": cat_item.retention_status,
                     "evidence": cat_item.attachment_evidence,
+                    "text_extraction": cat_item.text_extraction or {"status": "not_requested"},
                     "sha256": cat_item.sha256,
                     "size_bytes": cat_item.size_bytes,
                     "local_rel_path": cat_item.local_rel_path,
@@ -356,6 +375,7 @@ def generate_enriched_outputs(
             "extracted": c.extracted,
             "retention_status": c.retention_status,
             "evidence": c.attachment_evidence,
+            "text_extraction": c.text_extraction or {"status": "not_requested"},
             "sha256": c.sha256,
             "size_bytes": c.size_bytes,
             "local_rel_path": c.local_rel_path,
