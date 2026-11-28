@@ -83,6 +83,9 @@ class AIViewTests(unittest.TestCase):
             self.assertNotRegex(rendered, r"(?m)^\[M9999\]")
             self.assertEqual(payload["messages"][1]["source_line"], parsed[1].line_number)
             self.assertEqual(audit["audios"][0]["evidence_id"], "E0001")
+            revision = payload["ai_view"]["corpus_revision_sha256"]
+            self.assertEqual(audit["ai_view"]["corpus_revision_sha256"], revision)
+            self.assertIn(revision, rendered)
             self.assertEqual(audit["media_catalog"][1]["evidence_id"], "E0002")
             self.assertEqual(payload["messages"][2]["source_content"], parsed[2].content)
             self.assertEqual(payload["messages"][2]["attachment"]["evidence_id"], "E0002")
@@ -90,6 +93,9 @@ class AIViewTests(unittest.TestCase):
             self.assertEqual(regenerated.read_bytes(), paths["ai_view"].read_bytes())
             self.assertEqual(write_ai_markdown(payload, root / "regenerated"), regenerated)
             payload["messages"][0]["content"] = "Alterado"
+            with self.assertRaises(ValueError):
+                write_ai_markdown(payload, root / "regenerated")
+            del payload["ai_view"]["corpus_revision_sha256"]
             with self.assertRaises(FileExistsError):
                 write_ai_markdown(payload, root / "regenerated")
 
@@ -123,6 +129,18 @@ class AIViewTests(unittest.TestCase):
                 self.assertNotIn("_chat.txt", pack.namelist())
             self.assertEqual((output / "enriched_chat.md").read_bytes(),
                              (default / "enriched_chat.md").read_bytes())
+
+    def test_aggregate_ocr_cap_does_not_hide_page_tail(self):
+        text = "A" * 100_100 + "\nPENALIDADE R$ 437,29"
+        payload = {"total_messages": 1, "messages": [{"index": 1, "type": "document",
+            "content": "Contrato.pdf", "attachment": {"text_extraction": {
+                "status": "failed", "truncated": True, "text": text[:100_000],
+                "pages": [{"page": 1, "status": "extracted", "text": text},
+                          {"page": 2, "status": "failed", "error": "SyntheticError"}]}}}]}
+        view = render_ai_markdown(payload)
+        self.assertIn("PENALIDADE R$ 437,29", view)
+        self.assertIn("[E0001#p2]", view)
+        self.assertIn('"truncated":true', view)
 
     def test_legacy_records_and_invalid_indexes(self):
         payload = {"chat_title": "Legacy", "total_messages": 1, "messages": [
