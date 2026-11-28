@@ -1,4 +1,6 @@
 import argparse
+import hashlib
+import json
 import os
 import sys
 import shutil
@@ -13,6 +15,7 @@ from .parser import parse_chat_log, extract_chat_title
 from .matcher import match_audios_and_catalog_media
 from .vocab import harvest_vocabulary_from_chat
 from .formatter import generate_enriched_outputs
+from .ai_view import write_ai_markdown
 from .hardware import detect_hardware
 from .video import extract_audio_from_video
 from .backends.base import BaseTranscriber
@@ -90,10 +93,13 @@ def copy_folder_input(
     return chat_file, set(by_name)
 
 
-def create_agent_pack(output_dir: Path, zip_target: Path) -> Path:
+def create_agent_pack(output_dir: Path, zip_target: Path, include_ai_view: bool = False) -> Path:
     """Allowlist canonical artifacts and retained media; never include the raw chat export."""
     files = []
-    for name in ("enriched_chat.md", "enriched_chat.json", "audio_audit.json"):
+    names = ("enriched_chat.md", "enriched_chat.json", "audio_audit.json")
+    if include_ai_view:
+        names += ("ai_chat.md",)
+    for name in names:
         path = output_dir / name
         if not path.is_file():
             raise FileNotFoundError(f"Required agent artifact not found: {path}")
@@ -228,7 +234,8 @@ def main():
     )
 
     core_grp = parser.add_argument_group("Core")
-    core_grp.add_argument("input_path", type=Path, help="Path to exported WhatsApp .zip file or folder.")
+    core_grp.add_argument("input_path", nargs="?", type=Path, help="Path to exported WhatsApp .zip file or folder.")
+    core_grp.add_argument("--from-enriched", type=Path, help="Regenerate ai_chat.md from enriched_chat.json without STT/OCR.")
     core_grp.add_argument("-o", "--output", type=Path, default=None, help="Output destination folder.")
     core_grp.add_argument("-l", "--language", default="pt", help="Spoken language code (default: pt).")
 
@@ -253,6 +260,7 @@ def main():
     )
     media_grp.add_argument("--rezip", action="store_true", help="Bundle enriched outputs and selected media into <output>_agent_pack.zip.")
     media_grp.add_argument("--ocr", action="store_true", help="Extract PDF text and local JPEG/PNG OCR (requires the [ocr] extra).")
+    media_grp.add_argument("--ai-view", action="store_true", help="Also generate a single AI evidence Markdown view.")
 
     engine_grp = parser.add_argument_group("Engine & Model")
     engine_grp.add_argument("-e", "--engine", choices=["auto", "local", "hermes"], default="auto", help="STT engine (default: auto).")
@@ -274,6 +282,20 @@ def main():
     parser.add_argument("--lean", action="store_true", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    if args.from_enriched is not None:
+        if args.input_path is not None or args.rezip or args.ocr or args.transcribe_videos:
+            parser.error('--from-enriched cannot be combined with an input export, --rezip, --ocr or --transcribe-videos')
+        source = args.from_enriched.resolve()
+        with source.open(encoding='utf-8') as handle:
+            payload = json.load(handle)
+        destination = args.output.resolve() if args.output else source.parent
+        path = write_ai_markdown(payload, destination)
+        if not args.quiet:
+            print(f'[OUTPUT] AI evidence view: {path}')
+        return
+    if args.input_path is None:
+        parser.error('an input export or --from-enriched is required')
 
     input_path = args.input_path.resolve()
     if not input_path.exists():
@@ -310,7 +332,13 @@ def main():
 
     if not args.quiet:
         print(f"[PARSER] Reading conversation: {chat_file.name}")
-    chat_text = chat_file.read_text(encoding="utf-8", errors="replace")
+    source_sha256 = None
+    if args.ai_view:
+        source_bytes = chat_file.read_bytes()
+        source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+        chat_text = source_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    else:
+        chat_text = chat_file.read_text(encoding="utf-8", errors="replace")
     messages = parse_chat_log(chat_text, known_filenames=available_in_source)
     if not args.quiet:
         print(f"[PARSER] Parsed {len(messages)} messages.")
@@ -459,18 +487,22 @@ def main():
         output_dir=output_dir,
         chat_title=chat_title,
         execution_info=execution_info,
+        ai_view=args.ai_view,
+        source_sha256=source_sha256,
     )
 
     if not args.quiet:
         print(f"\n[OUTPUT] Enriched Markdown: {paths['markdown']}")
         print(f"[OUTPUT] Enriched JSON:     {paths['json']}")
         print(f"[OUTPUT] Media Audit:       {paths['audit']}")
+        if args.ai_view:
+            print(f"[OUTPUT] AI evidence view:  {paths['ai_view']}")
 
     if args.rezip:
         zip_target = output_dir.parent / f"{output_dir.name}_agent_pack.zip"
         if not args.quiet:
             print(f"[REZIP] Packaging final deliverables into {zip_target.name}...")
-        create_agent_pack(output_dir, zip_target)
+        create_agent_pack(output_dir, zip_target, include_ai_view=args.ai_view)
         if not args.quiet:
             print(f"[REZIP] Agent Pack created: {zip_target}")
 

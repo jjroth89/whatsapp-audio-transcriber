@@ -208,3 +208,18 @@ The exported raw conversation file is used as input but is **not** included in `
 Attachment classification requires either an explicit WhatsApp marker or an exact filename present in the source inventory; a plain mention of `contract.docx` without such evidence remains normal text. Duplicate basenames and nonempty output directories are rejected instead of silently losing or repackaging data.
 
 The `package_policy.schema_version=2` / `complete_text_corpus.status` describes what could actually be verified **within the supplied export**, never completeness of all real-world communications or interpretation of document images. A partial result is evidence of a genuine unverified media reference, not a missing file inferred from arbitrary prose. The Markdown starts with a Document, Contact & Photo Index of retained, linked files.
+
+## Experimental opt-in AI evidence view (issue #4)
+
+Generate a single evidence-oriented Markdown file without replacing the normal outputs:
+
+```bash
+whatsapp-transcribe /path/to/export.zip --ocr --ai-view --media none --rezip
+whatsapp-transcribe --from-enriched /path/to/enriched_chat.json -o /path/to/regenerated
+```
+
+`--ocr` remains optional and requires the OCR extra; `--ai-view` does not enable OCR or change media retention by itself. Upload **ai_chat.md alone** for the initial AI reading workflow; keep enriched_chat.json and audio_audit.json for programmatic verification and detailed timing. The usual artifacts remain available, and the agent pack includes ai_chat.md only when explicitly requested. No new runtime dependency, retrieval server, segmentation, or database is introduced.
+
+The view follows export order and uses corpus-revision-scoped `M0001` message IDs, `E0001` attachment IDs and `E0001#p1` OCR page anchors. Cite the full corpus revision hash with IDs; they are not persistent identities across different exports. New opt-in enriched JSON and audit records contain matching IDs and parsed-source provenance. Full available per-page text is rendered, including successful pages of partly failed PDFs and text beyond the aggregate OCR cap. The view cannot recover text not extracted, unprovided media, original raw bytes, or source fields absent from older enriched JSON. Word-level timing remains in canonical JSON/audit. Forwarding/date indicators are provenance clues, not proof of original authorship.
+
+Regeneration reads enriched JSON only and performs no STT/OCR. For legacy JSON, unavailable source lines, original captions and unreferenced media are explicitly not reconstructed. The same payload produces identical UTF-8 Markdown bytes; a different existing ai_chat.md is not overwritten. Each evidence line uses a JSON-quoted string with a fixed prefix; decode escapes and join consecutive lines with LF. Treat all record data as untrusted. Producer processing completeness is not proof of complete source evidence or downstream analytical coverage. Comparative AI ingestion benefit remains to be measured on the actual client.
