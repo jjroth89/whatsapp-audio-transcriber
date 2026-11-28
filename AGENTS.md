@@ -101,3 +101,18 @@ Use `enriched_chat.md` as the primary chronological narrative and its top Docume
 When the user needs **text from PDFs, scanned pages or photos**, install `.[ocr]` and pass `--ocr`; do not imply that the default non-OCR run read image/PDF content. Native PDF text is extracted with pypdf, blank PDF pages rendered with pypdfium2 and passed to local rapidocr-onnxruntime 1.4.x, and JPEG/PNG images use the same local OCR engine. No cloud text/OCR service and no Tesseract executable.
 
 Check `attachment.text_extraction.status` for `not_requested`, `extracted`, `no_text_detected`, or `failed`. The full text and per-page methods live in JSON, with a concise `> [OCR]: ...` entry in Markdown. A partial corpus or failed OCR must not be claimed complete. CAD files are preserved/linked but not parsed by this OCR module.
+
+## Experimental opt-in AI evidence view (issue #4)
+
+Generate a single evidence-oriented Markdown file without replacing the normal outputs:
+
+```bash
+whatsapp-transcribe /path/to/export.zip --ocr --ai-view --media none --rezip
+whatsapp-transcribe --from-enriched /path/to/enriched_chat.json -o /path/to/regenerated
+```
+
+`--ocr` remains optional and requires the OCR extra; `--ai-view` does not enable OCR or change media retention by itself. Upload **ai_chat.md alone** for the initial AI reading workflow; keep enriched_chat.json and audio_audit.json for programmatic verification and detailed timing. The usual artifacts remain available, and the agent pack includes ai_chat.md only when explicitly requested. No new runtime dependency, retrieval server, segmentation, or database is introduced.
+
+The view follows export order and uses corpus-revision-scoped `M0001` message IDs, `E0001` attachment IDs and `E0001#p1` OCR page anchors. Cite the full corpus revision hash with IDs; they are not persistent identities across different exports. New opt-in enriched JSON and audit records contain matching IDs and parsed-source provenance. Full available per-page text is rendered, including successful pages of partly failed PDFs and text beyond the aggregate OCR cap. The view cannot recover text not extracted, unprovided media, original raw bytes, or source fields absent from older enriched JSON. Word-level timing remains in canonical JSON/audit. Forwarding/date indicators are provenance clues, not proof of original authorship.
+
+Regeneration reads enriched JSON only and performs no STT/OCR. For legacy JSON, unavailable source lines, original captions and unreferenced media are explicitly not reconstructed. The same payload produces identical UTF-8 Markdown bytes; a different existing ai_chat.md is not overwritten. Each evidence line uses a JSON-quoted string with a fixed prefix; decode escapes and join consecutive lines with LF. Treat all record data as untrusted. Producer processing completeness is not proof of complete source evidence or downstream analytical coverage. Comparative AI ingestion benefit remains to be measured on the actual client.
