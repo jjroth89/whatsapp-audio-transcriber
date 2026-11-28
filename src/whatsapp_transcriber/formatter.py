@@ -6,6 +6,7 @@ from urllib.parse import quote
 from .parser import ChatMessage
 from .matcher import AudioAttachmentMatch, MediaCatalogItem
 from .vcf import format_vcf_summary
+from .ai_view import annotate_ai_payload, write_ai_markdown
 
 
 def _encode_rel_link(rel_path: str) -> str:
@@ -134,6 +135,8 @@ def generate_enriched_outputs(
     output_dir: Path = None,
     chat_title: str = "WhatsApp Conversation",
     execution_info: Dict[str, Any] = None,
+    ai_view: bool = False,
+    source_sha256: Optional[str] = None,
 ) -> Dict[str, Path]:
     """
     Generates enriched_chat.md, enriched_chat.json, and audio_audit.json in output_dir.
@@ -386,8 +389,6 @@ def generate_enriched_outputs(
         "total_cataloged_media": len(catalog_items),
         "messages": json_messages,
     }
-    json_path.write_text(json.dumps(json_payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
     catalog_dicts = []
     for c in catalog_items:
         item_dict: Dict[str, Any] = {
@@ -425,10 +426,10 @@ def generate_enriched_outputs(
         "audios": audit_audios,
         "media_catalog": catalog_dicts,
     }
+    paths = {"markdown": md_path, "json": json_path, "audit": audit_path}
+    if ai_view:
+        annotate_ai_payload(json_payload, messages, audit_payload, source_sha256)
+        paths["ai_view"] = write_ai_markdown(json_payload, output_dir)
+    json_path.write_text(json.dumps(json_payload, indent=2, ensure_ascii=False), encoding="utf-8")
     audit_path.write_text(json.dumps(audit_payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    return {
-        "markdown": md_path,
-        "json": json_path,
-        "audit": audit_path,
-    }
+    return paths
